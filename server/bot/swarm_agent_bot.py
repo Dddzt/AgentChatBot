@@ -23,8 +23,18 @@ client = OllamaClient()
 client_ollama = client.get_client()
 
 # Redis 连接池
-redis_pool = redis.ConnectionPool(host=REDIS_DATA.get("host"), port=REDIS_DATA.get("port"), db=REDIS_DATA.get("db"))
-redis_client = redis.StrictRedis(connection_pool=redis_pool)
+def get_redis_client():
+    """获取Redis客户端，如果连接失败则返回None"""
+    try:
+        redis_pool = redis.ConnectionPool(host=REDIS_DATA.get("host"), port=REDIS_DATA.get("port"), db=REDIS_DATA.get("db"))
+        client = redis.StrictRedis(connection_pool=redis_pool)
+        client.ping()  # 测试连接
+        return client
+    except redis.RedisError as e:
+        logging.warning(f"Redis连接失败，将不使用历史记录功能: {e}")
+        return None
+
+redis_client = get_redis_client()
 
 # 存储会话中的图像路径
 user_image_map = {}
@@ -98,6 +108,8 @@ class SwarmBot:
 
     def get_history_from_redis(self, user_id):
         """从Redis获取历史记录"""
+        if redis_client is None:
+            return []
         key = f"{self.redis_key_prefix}{user_id}"
         try:
             history = redis_client.get(key)
@@ -109,6 +121,8 @@ class SwarmBot:
 
     def save_history_to_redis(self, user_id, history):
         """将历史记录保存到Redis"""
+        if redis_client is None:
+            return
         key = f"{self.redis_key_prefix}{user_id}"
         try:
             redis_client.set(key, json.dumps(history))

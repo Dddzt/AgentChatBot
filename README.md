@@ -6,7 +6,7 @@
 ![Framework](https://img.shields.io/badge/framework-langchain-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-基于 langchain/Ollama 的智能对话机器人，支持微信与飞书部署
+基于 langchain/Ollama 的智能对话机器人，支持飞书与Web部署
 </div>
 
 ## 📚 目录
@@ -23,9 +23,9 @@
 ## 🌟 项目概览
 
 AgentChatBot 是一个基于 langchain/Ollama 的智能体框架，支持：
-- 🤖 私人微信部署 (通过 VChat)
 - 💼 飞书机器人集成
-- 🎨 React UI 界面
+- 🌐 Web UI 界面
+- 💻 命令行交互
 - 🛠 自定义工具扩展
 
 ## 🚀 核心功能
@@ -36,9 +36,9 @@ AgentChatBot 是一个基于 langchain/Ollama 的智能体框架，支持：
 - 智能代码补全
 
 ### 多平台支持
-- ✅ 微信接入
 - ✅ 飞书部署
-- ✅ React UI 界面
+- ✅ Web UI 界面
+- ✅ 命令行模式
 - 🔧 更多平台持续集成中...
 
 ## 📢 最新更新
@@ -80,11 +80,17 @@ conda activate agent_wechat
 
 # 安装依赖
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
-pip install aiohttp pytz vchat langchain_openai transformers -i https://pypi.tuna.tsinghua.edu.cn/simple/
+pip install flask flask-cors langchain_openai transformers -i https://pypi.tuna.tsinghua.edu.cn/simple/
 pip install mysql-connector-python langchain pillow aiofiles -i https://pypi.tuna.tsinghua.edu.cn/simple/
-pip install git+https://github.com/openai/swarm.git
 
-# 启动项目
+# 启动项目（命令行版本）
+python cli_bot.py
+
+# 启动项目（Web版本，通过浏览器访问）
+python web_bot.py
+
+# 启动项目（飞书版本）
+cd playground/feishu
 python main.py
 ```
 </details>
@@ -211,6 +217,7 @@ self.agent = Agent(
 def transfer_to_code(self, query, code_type):
     print(f"使用的代码语言 {code_type} ,问题是 {query}")
     return self.code_agent
+
 ```
 </details>
 
@@ -227,8 +234,8 @@ def transfer_to_code(self, query, code_type):
 
 ## 🔗 相关项目
 
-- [VChat 框架](https://github.com/z2z63/VChat) 感谢z2z63作者
 - [AIChat_UI](https://github.com/panxingfeng/AIChat_UI)
+- [OpenAI Swarm](https://github.com/openai/swarm)
 
 ---
 

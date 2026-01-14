@@ -1,7 +1,9 @@
 import traceback
-from langchain.agents import create_openai_tools_agent, AgentExecutor
 from langchain_core.prompts import MessagesPlaceholder, ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+from langchain.agents.agent import AgentExecutor
+from langchain.agents.format_scratchpad.openai_tools import format_to_openai_tool_messages
+from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
 
 from config.config import CHATGPT_DATA, REDIS_DATA
 from config.templates.data.bot import MAX_HISTORY_SIZE, MAX_HISTORY_LENGTH, AGENT_BOT_PROMPT_DATA, BOT_DATA
@@ -30,8 +32,18 @@ os.environ["OPENAI_API_KEY"] = CHATGPT_DATA.get("key")
 os.environ["OPENAI_API_BASE"] = CHATGPT_DATA.get("url")
 
 # Redis 连接池
-redis_pool = redis.ConnectionPool(host=REDIS_DATA.get("host"), port=REDIS_DATA.get("port"), db=REDIS_DATA.get("db"))
-redis_client = redis.StrictRedis(connection_pool=redis_pool)
+def get_redis_client():
+    """获取Redis客户端，如果连接失败则返回None"""
+    try:
+        redis_pool = redis.ConnectionPool(host=REDIS_DATA.get("host"), port=REDIS_DATA.get("port"), db=REDIS_DATA.get("db"))
+        client = redis.StrictRedis(connection_pool=redis_pool)
+        client.ping()  # 测试连接
+        return client
+    except redis.RedisError as e:
+        logging.warning(f"Redis连接失败，将不使用历史记录功能: {e}")
+        return None
+
+redis_client = get_redis_client()
 
 # 存储会话中的图像路径
 user_image_map = {}
@@ -50,14 +62,17 @@ class AgentBot:
         self.query = query
         self.user_name = user_name
         self.chatModel_4o_mini = ChatOpenAI(
-            model="gpt-4o-mini",
-            temperature=0,
+            model=CHATGPT_DATA.get("model"),  # 从配置读取模型名
+            api_key=CHATGPT_DATA.get("key"),  # 从配置读取 API Key
+            base_url=CHATGPT_DATA.get("url"),  # 从配置读取 API URL
+            temperature=CHATGPT_DATA.get("temperature", 0),  # 从配置读取温度
             streaming=True
         )
         self.redis_key_prefix = "chat_history:"
         self.history = []  # 自定义的历史记录列表
         self.saved_files = {}  # 保存文件路径的字典
         self.user_id = user_id
+        # 创建聊天模板，包括上下文信息和结构化的交互模式
         self.prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -80,16 +95,27 @@ class AgentBot:
                     "user",
                     "{input}"
                 ),
-                MessagesPlaceholder(variable_name="agent_scratchpad")
+                MessagesPlaceholder(variable_name="agent_scratchpad") # 用于存储智能体在执行工具调用过程中的中间思考和观察结果
             ]
         )
 
-        agent = create_openai_tools_agent(
-            self.chatModel_4o_mini,
-            tools=tools,
-            prompt=self.prompt
+        # 绑定工具到模型
+        llm_with_tools = self.chatModel_4o_mini.bind_tools(tools)
+        
+        # 创建智能体链
+        agent = (
+            {
+                "input": lambda x: x["input"],
+                "agent_scratchpad": lambda x: format_to_openai_tool_messages(
+                    x["intermediate_steps"]
+                ),
+            }
+            | self.prompt
+            | llm_with_tools
+            | OpenAIToolsAgentOutputParser()
         )
 
+        # 创建智能体执行器
         self.agent_executor = AgentExecutor(
             agent=agent,
             tools=tools,
@@ -113,6 +139,8 @@ class AgentBot:
 
     def get_history_from_redis(self, user_id):
         """从Redis获取历史记录"""
+        if redis_client is None:
+            return []
         key = f"{self.redis_key_prefix}{user_id}"
         try:
             history = redis_client.get(key)
@@ -124,6 +152,8 @@ class AgentBot:
 
     def save_history_to_redis(self, user_id, history):
         """将历史记录保存到Redis"""
+        if redis_client is None:
+            return
         key = f"{self.redis_key_prefix}{user_id}"
         try:
             redis_client.set(key, json.dumps(history))

@@ -3,8 +3,9 @@ from typing import ClassVar
 import requests
 from langchain.agents import tool
 from pydantic import BaseModel
+from langchain_openai import ChatOpenAI
 
-from config.config import OLLAMA_DATA
+from config.config import OLLAMA_DATA, CHATGPT_DATA
 from config.templates.data.bot import CODE_BOT_PROMPT_DATA
 
 logging.basicConfig(
@@ -16,14 +17,15 @@ logging.basicConfig(
 
 class CodeGenAPIWrapper(BaseModel):
     base_url: ClassVar[str] = "http://localhost:11434/api/chat"
-    content_role: ClassVar[str] = CODE_BOT_PROMPT_DATA
+    content_role: ClassVar[str] = CODE_BOT_PROMPT_DATA.get("description")  # 从字典中取出提示词
     model: ClassVar[str] = OLLAMA_DATA.get("code_model") #可以使用其他的本地模型，自行修改
 
-    def run(self, query: str, model_name: str) -> str:
-        logging.info(f"使用模型 {model_name} 处理用户请求: {query}")
+    def run_ollama(self, query: str, model_name: str) -> str:
+        """使用本地 Ollama 模型生成代码"""
+        logging.info(f"使用 Ollama 模型 {model_name} 处理用户请求: {query}")
         data = {
             "model": model_name,
-            "messages": [{"role": "user", "content": self.content_role + query}],
+            "messages": [{"role": "user", "content": self.content_role + "\n" + query}],  # 字符串拼接
             "stream": False,
         }
         response = requests.post(self.base_url, json=data)
@@ -35,10 +37,37 @@ class CodeGenAPIWrapper(BaseModel):
         except requests.exceptions.JSONDecodeError as e:
             return f"解析 JSON 时出错: {e}"
 
+    def run_chatgpt(self, query: str) -> str:
+        """使用 ChatGPT/阿里云等在线 API 生成代码"""
+        logging.info(f"使用在线模型 {CHATGPT_DATA.get('model')} 处理用户请求: {query}")
+        try:
+            model = ChatOpenAI(
+                model=CHATGPT_DATA.get("model"),
+                api_key=CHATGPT_DATA.get("key"),
+                base_url=CHATGPT_DATA.get("url"),
+                temperature=0.3  # 代码生成用较低温度
+            )
+            messages = [
+                {"role": "system", "content": self.content_role},
+                {"role": "user", "content": query}
+            ]
+            response = model.invoke(messages)
+            return response.content
+        except Exception as e:
+            logging.error(f"使用在线模型生成代码时出错: {e}")
+            return f"代码生成失败: {e}"
+
     def generate_code(self, query: str) -> str:
         try:
-            result = self.run(query, self.model)
-            if "无法生成代码" not in result:
+            # 优先使用配置中启用的模型
+            if CHATGPT_DATA.get("use") and CHATGPT_DATA.get("key"):
+                result = self.run_chatgpt(query)
+            elif OLLAMA_DATA.get("use"):
+                result = self.run_ollama(query, self.model)
+            else:
+                return "未配置可用的模型，请检查 config.py"
+            
+            if result and "无法生成代码" not in result and "失败" not in result:
                 return result
         except Exception as e:
             logging.error(f"生成代码时出错: {e}")

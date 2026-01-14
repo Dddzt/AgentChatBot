@@ -22,8 +22,19 @@ logging.basicConfig(level=logging.INFO,
 base_dir = os.path.dirname(os.path.abspath(__file__))
 
 # 配置Redis连接池
-redis_pool = redis.ConnectionPool(host=REDIS_DATA.get("host"), port=REDIS_DATA.get("port"), db=REDIS_DATA.get("db"))
-redis_client = redis.StrictRedis(connection_pool=redis_pool)
+def get_redis_client():
+    """获取Redis客户端，如果连接失败则返回None"""
+    try:
+        redis_pool = redis.ConnectionPool(host=REDIS_DATA.get("host"), port=REDIS_DATA.get("port"), db=REDIS_DATA.get("db"))
+        client = redis.StrictRedis(connection_pool=redis_pool)
+        client.ping()  # 测试连接
+        logging.info("Redis连接成功")
+        return client
+    except redis.RedisError as e:
+        logging.warning(f"Redis连接失败，将不使用历史记录功能: {e}")
+        return None
+
+redis_client = get_redis_client()
 
 # 获取当前系统时间
 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -72,6 +83,8 @@ class ChatBot:
 
     def get_history_from_redis(self, user_id):
         """从Redis获取历史记录"""
+        if redis_client is None:
+            return []
         key = f"{self.redis_key_prefix}{user_id}"  # 生成Redis的键名
         try:
             history = redis_client.get(key)  # 获取历史记录
@@ -83,6 +96,8 @@ class ChatBot:
 
     def save_history_to_redis(self, user_id, history):
         """将历史记录保存到Redis"""
+        if redis_client is None:
+            return
         key = f"{self.redis_key_prefix}{user_id}"  # 生成Redis的键名
         try:
             redis_client.set(key, json.dumps(history))  # 将历史记录保存为JSON格式
@@ -119,11 +134,11 @@ class ChatBot:
             else:
                 # 设置模型的提示词信息，包括历史记录、欢迎信息等
                 instructions = CHATBOT_PROMPT_DATA.get("description").format(
-                    name=BOT_DATA["agent"].get("name"),
-                    capabilities=BOT_DATA["agent"].get("capabilities"),
-                    welcome_message=BOT_DATA["agent"].get("default_responses").get("welcome_message"),
-                    unknown_command=BOT_DATA["agent"].get("default_responses").get("unknown_command"),
-                    language_support=BOT_DATA["agent"].get("language_support"),
+                    name=BOT_DATA["chat"].get("name"),
+                    capabilities=BOT_DATA["chat"].get("capabilities"),
+                    welcome_message=BOT_DATA["chat"].get("default_responses").get("welcome_message"),
+                    unknown_command=BOT_DATA["chat"].get("default_responses").get("unknown_command"),
+                    language_support=BOT_DATA["chat"].get("language_support"),
                     history=self.format_history(),
                     query=query,
                 )

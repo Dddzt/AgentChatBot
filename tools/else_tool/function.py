@@ -7,15 +7,34 @@ import mysql.connector
 
 from config.config import DB_DATA
 
-conn = mysql.connector.connect(
-    host=DB_DATA.get("host"),
-    user=DB_DATA.get("user"),
-    password=DB_DATA.get("password"),
-    database=DB_DATA.get("database")
-)
+# 配置日志
+logging.basicConfig(level=logging.INFO,
+                    format='[%(asctime)s][%(levelname)s]: %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S')
+
+# MySQL连接
+def get_mysql_connection():
+    """获取MySQL连接，如果连接失败则返回None"""
+    try:
+        conn = mysql.connector.connect(
+            host=DB_DATA.get("host"),
+            user=DB_DATA.get("user"),
+            password=DB_DATA.get("password"),
+            database=DB_DATA.get("database")
+        )
+        logging.info("MySQL数据库连接成功")
+        return conn
+    except mysql.connector.Error as e:
+        logging.warning(f"MySQL数据库连接失败: {e}")
+        return None
+
+conn = get_mysql_connection()
 
 def save_message_to_mysql(message_text: str, timestamp: str, table_name: str, user_name: str) -> str:
     global conn
+    if conn is None:
+        logging.warning("MySQL未连接，无法保存消息")
+        return "数据库未连接，无法保存消息"
     try:
         with conn.cursor() as cursor:
             # 创建表格（如果尚未存在）
@@ -86,17 +105,4 @@ async def generate_random_filename(extension=".png", length=10):
         logging.error(f"生成文件名时出错: {e}")
         return None  # 出错时返回 None
 
-def get_username_chatroom(message):
-    """从消息中提取并返回 'in' 之前和 'ber' 之后内容的交集。"""
-    match_before_in = re.search(r"^(.*?) in", message)
-    content_before_in = match_before_in.group(1).strip() if match_before_in else ''
 
-    match_after_ber = re.search(r"ber(.*?)(?=>>)", message)
-    content_after_ber = match_after_ber.group(1).strip() if match_after_ber else ''
-
-    words_before_in = set(content_before_in.split())
-    words_after_ber = set(content_after_ber.split())
-
-    intersection = words_before_in & words_after_ber
-
-    return ' '.join(intersection)
