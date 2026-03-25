@@ -17,7 +17,7 @@ def run_rag(question: str, knowledge_base_path: str, k: int = 1) -> str:
 
     # 创建向量模型客户端
     embedding = EmbeddingModel()
-    vector.get_vector(EmbeddingModel=embedding)
+    vector.get_vector(EmbeddingModel=embedding) # FIXME：模型是否正确？
 
     # 将向量和文档保存到本地
     vector.persist(path='file/storage')

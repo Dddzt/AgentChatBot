@@ -1,95 +1,92 @@
+"""
+群聊消息格式化 —— 使用 Lark SDK 上传图片资源。
+"""
+
 import json
 import os
+import logging
 
-import requests
-from requests_toolbelt import MultipartEncoder # 输入pip install requests_toolbelt 安装依赖库
+import lark_oapi as lark
+from lark_oapi.api.im.v1 import CreateImageRequest, CreateImageRequestBody
 
-from config.config import FEISHU_DATA
+from playground.feishu.lark_client import get_lark_client
+
+logger = logging.getLogger(__name__)
+
 
 class MessageTypeGroup:
-    """
-    格式化群用户回复用户的消息的格式
-    """
-    def __init__(self,query,send_id,receive_id,receive_id_type):
+    """格式化群聊回复消息"""
+
+    def __init__(self, query: str, send_id: str, receive_id: str, receive_id_type: str):
         self.query = query
         self.send_id = send_id
         self.receive_id = receive_id
         self.receive_id_type = receive_id_type
 
-    def handle(self, message):
-        # 获取文件扩展名并转换为小写
-        _, file_extension = os.path.splitext(message)
-        file_extension = file_extension.lower()
+    def handle(self, message: str) -> dict | None:
+        _, ext = os.path.splitext(message)
+        if ext.lower() == ".png":
+            image_key = upload_image(message)
+            return self._image_message(image_key)
+        return self._text_message(message)
 
-        if file_extension == ".png":
-            # 假设返回是一个图片文件地址
-            image_key = get_image_key(message)
-            return self.image_message(image_key)
-        else:
-            return self.text_message(message)
-
-    def text_message(self,message):
+    def _text_message(self, message: str) -> dict:
         return {
             "receive_id": self.receive_id,
-            "content": json.dumps({
-                        "text": f"<at user_id=\"{self.send_id}\"></at> {message}",
-                    }),
+            "content": json.dumps(
+                {"text": f'<at user_id="{self.send_id}"></at> {message}'}
+            ),
             "msg_type": "text",
-            "receive_id_type": self.receive_id_type
+            "receive_id_type": self.receive_id_type,
         }
 
-    def image_message(self,image_key):
-        if image_key:
-            return {
-                "receive_id": self.receive_id,
-                "content":json.dumps({
-                        "zh_cn": {
-                            "title":"生成的图像结果",
-                            "content":[
-                                [
-                                    {
-                                        "tag": "at",
-                                        "user_id": self.send_id,
-                                        "style": ["bold"]
-                                    },
-                                    {
-                                        "tag": "text",
-                                        "text":"描述信息:",
-                                        "style": ["blob"]
-                                    },
-                                    {
-                                        "tag": "text",
-                                        "text":self.query,
-                                        "style": ["underline"]
-                                    }
-                                ],
-                                [{
-                                    "tag":"img",
-                                    "image_key":image_key
-                                }]
-                            ]
-                        }
-                    }),
-                "msg_type":"post",
-                "receive_id_type": self.receive_id_type
-            }
-        else:
+    def _image_message(self, image_key: str | None) -> dict | None:
+        if not image_key:
             return None
+        return {
+            "receive_id": self.receive_id,
+            "content": json.dumps(
+                {
+                    "zh_cn": {
+                        "title": "生成的图像结果",
+                        "content": [
+                            [
+                                {"tag": "at", "user_id": self.send_id, "style": ["bold"]},
+                                {"tag": "text", "text": "描述信息:", "style": ["bold"]},
+                                {"tag": "text", "text": self.query, "style": ["underline"]},
+                            ],
+                            [{"tag": "img", "image_key": image_key}],
+                        ],
+                    }
+                }
+            ),
+            "msg_type": "post",
+            "receive_id_type": self.receive_id_type,
+        }
 
 
-def get_image_key(image_path):
-    url = "https://open.feishu.cn/open-apis/im/v1/images"
-    form = {'image_type': 'message',
-            'image': (open(image_path, 'rb'))}
-    multi_form = MultipartEncoder(form)
-    headers = {'Authorization': "Bearer " + FEISHU_DATA.get('tenant_access_token'),
-               'Content-Type': multi_form.content_type}
-    response = requests.request("POST", url, headers=headers, data=multi_form)
-    # 解析 JSON 响应
-    response_data = response.json()
-    if response_data.get("code") == 0:  # 检查请求是否成功
-        image_key = response_data['data']['image_key']
-        return image_key
-    else:
-        print("Error:", response_data.get("msg"))
+def upload_image(image_path: str) -> str | None:
+    """通过 Lark SDK 上传图片，返回 image_key"""
+    try:
+        with open(image_path, "rb") as f:
+            image_data = f.read()
+
+        request = (
+            CreateImageRequest.builder()
+            .request_body(
+                CreateImageRequestBody.builder()
+                .image_type("message")
+                .image(image_data)
+                .build()
+            )
+            .build()
+        )
+        response = get_lark_client().im.v1.image.create(request)
+
+        if response.success():
+            return response.data.image_key
+        logger.error("[上传图片] 失败: code=%s, msg=%s", response.code, response.msg)
+        return None
+    except Exception as e:
+        logger.exception("[上传图片] 异常: %s", e)
         return None

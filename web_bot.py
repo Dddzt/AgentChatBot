@@ -1,608 +1,801 @@
 """
-Web Bot - 基于Flask的Web界面聊天机器人
-支持流式输出、历史记录管理、多模式切换
+Web Bot server for the browser-based chat UI.
 """
 
-import os
+from __future__ import annotations
+
+import asyncio
 import json
+import logging
+import os
+import sys
 import time
 import uuid
-import logging
-import asyncio
 from datetime import datetime
-from flask import Flask, render_template_string, request, Response, jsonify, stream_with_context
+from pathlib import Path
+from typing import Iterable
+
+import redis
+from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-import redis
 
-from config.config import CHATGPT_DATA, OLLAMA_DATA, REDIS_DATA, UPLOAD_FOLDER, FILE_CONFIG
-from config.templates.data.bot import CHATBOT_PROMPT_DATA, AGENT_BOT_PROMPT_DATA, BOT_DATA
+from config.config import CHATGPT_DATA, FILE_CONFIG, OLLAMA_DATA, REDIS_DATA, UPLOAD_FOLDER
+from config.templates.data.bot import AGENT_BOT_PROMPT_DATA, BOT_DATA, CHATBOT_PROMPT_DATA
+from server.client.model_factory import create_model_client
 from tools.file_processor import file_processor
 
-# 配置日志
-logging.basicConfig(level=logging.INFO,
-                    format='[%(asctime)s][%(levelname)s]: %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S')
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s][%(levelname)s]: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+
+def configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            continue
+
+
+configure_stdio()
+
+
+APP_ROOT = Path(__file__).resolve().parent
+UPLOAD_ROOT = (APP_ROOT / UPLOAD_FOLDER).resolve()
+HTML_FILE = APP_ROOT / "web_page.html"
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp"}
+SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
+MAX_SESSION_LIST = 100
+VALID_MODES = {"chat", "agent"}
+SESSION_LIST_KEY = "web_chat_sessions"
+SESSION_KEY_PREFIX = "web_chat_history:"
+SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+PSEUDO_STREAM_CHUNK_SIZE = max(1, int(CHATGPT_DATA.get("stream_flush_chars", 24)))
+PSEUDO_STREAM_DELAY_SECONDS = 0.02
+
 
 app = Flask(__name__)
-CORS(app)  # 允许跨域请求
+CORS(app)
 
-# 文件上传配置（从config读取）
-MAX_FILE_SIZE = FILE_CONFIG.get('max_size', 50 * 1024 * 1024)
-ALLOWED_EXTENSIONS = FILE_CONFIG.get('allowed_extensions', {
-    'image': {'png', 'jpg', 'jpeg', 'gif', 'bmp'},
-    'document': {'txt', 'md', 'pdf', 'doc', 'docx'},
-    'audio': {'mp3', 'wav', 'ogg', 'flac', 'm4a'},
-    'video': {'mp4', 'avi', 'mov', 'mkv', 'wmv'}
-})
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+app.config["UPLOAD_FOLDER"] = str(UPLOAD_ROOT)
+app.config["MAX_CONTENT_LENGTH"] = FILE_CONFIG.get("max_size", 50 * 1024 * 1024)
 
-# 确保上传目录存在
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
-
-# Redis 连接
-try:
-    redis_client = redis.StrictRedis(
-        host=REDIS_DATA.get('host', 'localhost'),
-        port=REDIS_DATA.get('port', 6379),
-        db=REDIS_DATA.get('db', 0),
-        decode_responses=False
-    )
-    redis_client.ping()
-    logging.info("Redis连接成功")
-except Exception as e:
-    logging.warning(f"Redis连接失败: {e}")
-    redis_client = None
+ALLOWED_EXTENSIONS = FILE_CONFIG.get(
+    "allowed_extensions",
+    {
+        "image": {"png", "jpg", "jpeg", "gif", "bmp"},
+        "document": {"txt", "md", "pdf", "doc", "docx"},
+        "audio": {"mp3", "wav", "ogg", "flac", "m4a"},
+        "video": {"mp4", "avi", "mov", "mkv", "wmv"},
+    },
+)
 
 
-def allowed_file(filename, file_type='all'):
-    """检查文件类型是否允许"""
-    if '.' not in filename:
-        return False
-    
-    ext = filename.rsplit('.', 1)[1].lower()
-    
-    if file_type == 'all':
-        # 检查所有允许的扩展名
-        all_extensions = set()
-        for exts in ALLOWED_EXTENSIONS.values():
-            all_extensions.update(exts)
-        return ext in all_extensions
-    else:
-        return ext in ALLOWED_EXTENSIONS.get(file_type, set())
-
-
-def get_file_type(filename):
-    """根据文件名获取文件类型"""
-    if '.' not in filename:
-        return 'unknown'
-    
-    ext = filename.rsplit('.', 1)[1].lower()
-    
-    for file_type, extensions in ALLOWED_EXTENSIONS.items():
-        if ext in extensions:
-            return file_type
-    
-    return 'unknown'
-
-
-async def run_chatbot(messages, mode, file_context=None):
-    """运行聊天机器人 - 只保留最近2条历史对话"""
-    from langchain_openai import ChatOpenAI
-    
-    # 只保留最近的2条历史消息（即1轮对话：1条用户消息 + 1条助手回复）
-    recent_messages = messages[-3:] if len(messages) > 3 else messages
-    
-    # 构建历史对话文本（只包含倒数第2、3条，不包含当前最新的用户消息）
-    history_text = ""
-    if len(recent_messages) > 1:
-        for msg in recent_messages[:-1]:
-            role_name = "用户" if msg["role"] == "user" else "助手"
-            history_text += f"{role_name}: {msg['content']}\n\n"
-    
-    # 获取当前查询
-    current_query = messages[-1]["content"] if messages else ""
-    
-    # 如果有文件上传，将文件信息添加到查询中
-    if file_context:
-        current_query = f"{file_context}\n\n用户问题: {current_query}"
-    
-    # 使用配置的模型
-    if OLLAMA_DATA.get("use"):
-        from server.client.loadmodel.Ollama.OllamaClient import OllamaClient
-        model = OllamaClient()
-    elif CHATGPT_DATA.get("use"):
-        model = ChatOpenAI(
-            api_key=CHATGPT_DATA.get("key"),
-            base_url=CHATGPT_DATA.get("url"),
-            model=CHATGPT_DATA.get("model")
+def init_redis_client() -> redis.Redis | None:
+    try:
+        client = redis.Redis(
+            host=REDIS_DATA.get("host", "localhost"),
+            port=REDIS_DATA.get("port", 6379),
+            db=REDIS_DATA.get("db", 0),
+            decode_responses=True,
         )
-    else:
-        return "请在config/config.py中配置OLLAMA_DATA或CHATGPT_DATA"
-    
-    # 构建完整的提示词（包含历史记录）
-    system_prompt = CHATBOT_PROMPT_DATA.get("description").format(
-        name=BOT_DATA["chat"].get("name"),
-        capabilities=BOT_DATA["chat"].get("capabilities"),
-        welcome_message=BOT_DATA["chat"].get("default_responses").get("welcome_message"),
-        unknown_command=BOT_DATA["chat"].get("default_responses").get("unknown_command"),
-        language_support=BOT_DATA["chat"].get("language_support"),
-        history=history_text if history_text else "无历史记录",
-        query=current_query,
-    )
-    
-    # 调用模型生成回复
-    messages_for_model = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": current_query}
-    ]
-    
-    response = model.invoke(messages_for_model)
-    return response.content if hasattr(response, 'content') else str(response)
+        client.ping()
+        logger.info("Redis connected")
+        return client
+    except Exception as exc:
+        logger.warning("Redis unavailable: %s", exc)
+        return None
 
 
-async def run_agentbot(messages, mode, file_context=None, file_path=None):
-    """运行智能体模式"""
-    from server.bot.agent_bot import AgentBot
-    
+redis_client = init_redis_client()
+
+
+def allowed_file(filename: str, file_type: str = "all") -> bool:
+    if "." not in filename:
+        return False
+
+    ext = filename.rsplit(".", 1)[1].lower()
+    if file_type == "all":
+        return any(ext in extensions for extensions in ALLOWED_EXTENSIONS.values())
+    return ext in ALLOWED_EXTENSIONS.get(file_type, set())
+
+
+def sanitize_messages(messages: object) -> list[dict[str, str]]:
+    if not isinstance(messages, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+
+        role = item.get("role")
+        content = item.get("content")
+        if role not in {"user", "assistant", "system"}:
+            continue
+        if not isinstance(content, str):
+            continue
+
+        normalized.append({"role": role, "content": content})
+
+    return normalized
+
+
+def build_history_text(messages: list[dict[str, str]]) -> str:
+    recent_messages = messages[-3:] if len(messages) > 3 else messages
+    history_parts: list[str] = []
+
+    for message in recent_messages[:-1]:
+        role_name = "用户" if message["role"] == "user" else "助手"
+        history_parts.append(f"{role_name}: {message['content']}")
+
+    return "\n\n".join(history_parts)
+
+
+def build_current_query(messages: list[dict[str, str]], file_context: str | None = None) -> str:
     current_query = messages[-1]["content"] if messages else ""
-    
-    # 如果有图片分析结果，将其添加到查询中
     if file_context:
         current_query = f"{file_context}\n\n用户问题: {current_query}"
-        logging.info(f"智能体模式：已将图片分析结果添加到查询中")
-    
-    agent_bot = AgentBot(
-        query=current_query,
-        user_id="web_user",
-        user_name="Web用户"
-    )
-    
-    response = await agent_bot.run(
-        user_name="Web用户",
-        query=current_query,
-        image_path=file_path if file_path and any(file_path.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp']) else None,
-        file_path=file_path if file_path and not any(file_path.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp']) else None,
-        user_id="web_user"
-    )
-    
-    return response
+    return current_query
 
 
-def generate_stream_response(messages, mode="chat", file_path=None, user_query=None):
-    """生成流式响应 - 真正的流式输出，支持图片延迟分析"""
-    try:
-        file_context = None
-        
-        # 如果有图片文件，在发送时调用视觉模型分析
-        if file_path and os.path.exists(file_path):
-            # 判断文件类型
-            ext = os.path.splitext(file_path)[1].lower()
-            image_extensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp']
-            
-            if ext in image_extensions:
-                # 图片文件：调用视觉模型分析
-                logging.info(f"正在分析图片: {file_path}")
-                
-                try:
-                    result = file_processor.process_image(file_path)
-                    if result.get('success'):
-                        vision_desc = result.get('vision_description', '')
-                        if vision_desc:
-                            file_context = f"[用户上传了一张图片，以下是图片内容分析]\n图片尺寸: {result.get('width')}x{result.get('height')}像素\n图片内容描述: {vision_desc}\n\n请根据以上图片信息回答用户的问题。"
-                            logging.info(f"图片分析成功，描述长度: {len(vision_desc)}")
-                        else:
-                            # 如果视觉模型没有返回结果，使用基础描述
-                            basic_desc = result.get('basic_description', '')
-                            file_context = f"[用户上传了一张图片]\n图片尺寸: {result.get('width')}x{result.get('height')}像素\n基础信息: {basic_desc}\n\n请根据图片信息回答用户的问题。"
-                            logging.warning("视觉模型未返回分析结果，使用基础描述")
-                    else:
-                        file_context = f"[图片处理失败: {result.get('error', '未知错误')}]"
-                        logging.error(f"图片处理失败: {result.get('error')}")
-                except Exception as e:
-                    logging.error(f"图片分析异常: {e}")
-                    file_context = f"[图片分析失败: {str(e)}]"
-            else:
-                # 非图片文件：直接读取文本内容
-                try:
-                    file_context = file_processor.convert_to_text(file_path)
-                    logging.info(f"文件处理成功: {file_path}")
-                except Exception as e:
-                    file_context = f"[文件处理失败: {str(e)}]"
-                    logging.error(f"文件处理失败: {e}")
-        
-        # 根据模式选择Bot
-        if mode == "agent":
-            if CHATGPT_DATA.get("use"):
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                # 传递file_context和file_path给智能体
-                response = loop.run_until_complete(run_agentbot(messages, mode, file_context, file_path))
-                loop.close()
-                # Agent模式暂时使用模拟流式（逐词输出）
-                if response:
-                    words = response.split(' ')
-                    for word in words:
-                        yield "data: " + json.dumps({"content": word + ' ', "done": False}, ensure_ascii=False) + "\n\n"
-                        time.sleep(0.02)
-            else:
-                yield "data: " + json.dumps({"content": "智能体模式需要配置CHATGPT_DATA", "done": True}, ensure_ascii=False) + "\n\n"
-                return
-        else:
-            # 聊天模式 - 使用真正的流式输出
-            from langchain_openai import ChatOpenAI
-            
-            # 只保留最近的2条历史消息
-            recent_messages = messages[-3:] if len(messages) > 3 else messages
-            
-            # 构建历史对话文本
-            history_text = ""
-            if len(recent_messages) > 1:
-                for msg in recent_messages[:-1]:
-                    role_name = "用户" if msg["role"] == "user" else "助手"
-                    history_text += f"{role_name}: {msg['content']}\n\n"
-            
-            # 获取当前查询
-            current_query = messages[-1]["content"] if messages else ""
-            
-            # 如果有文件上传，将文件信息添加到查询中
-            if file_context:
-                current_query = f"{file_context}\n\n用户问题: {current_query}"
-            
-            # 使用配置的模型
-            if OLLAMA_DATA.get("use"):
-                from server.client.loadmodel.Ollama.OllamaClient import OllamaClient
-                model = OllamaClient()
-                # Ollama模型暂时使用同步方式
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                response = loop.run_until_complete(run_chatbot(messages, mode, file_context))
-                loop.close()
-                # 逐词输出
-                if response:
-                    words = response.split(' ')
-                    for word in words:
-                        yield "data: " + json.dumps({"content": word + ' ', "done": False}, ensure_ascii=False) + "\n\n"
-                        time.sleep(0.02)
-            elif CHATGPT_DATA.get("use"):
-                # 使用ChatGPT/阿里云百炼的流式API
-                model = ChatOpenAI(
-                    api_key=CHATGPT_DATA.get("key"),
-                    base_url=CHATGPT_DATA.get("url"),
-                    model=CHATGPT_DATA.get("model"),
-                    streaming=True  # 启用流式
-                )
-                
-                # 构建完整的提示词
-                system_prompt = CHATBOT_PROMPT_DATA.get("description").format(
-                    name=BOT_DATA["chat"].get("name"),
-                    capabilities=BOT_DATA["chat"].get("capabilities"),
-                    welcome_message=BOT_DATA["chat"].get("default_responses").get("welcome_message"),
-                    unknown_command=BOT_DATA["chat"].get("default_responses").get("unknown_command"),
-                    language_support=BOT_DATA["chat"].get("language_support"),
-                    history=history_text if history_text else "无历史记录",
-                    query=current_query,
-                )
-                
-                messages_for_model = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": current_query}
-                ]
-                
-                # 真正的流式输出
-                logging.info("开始流式生成回复...")
-                for chunk in model.stream(messages_for_model):
-                    if hasattr(chunk, 'content') and chunk.content:
-                        yield "data: " + json.dumps({"content": chunk.content, "done": False}, ensure_ascii=False) + "\n\n"
-            else:
-                yield "data: " + json.dumps({"content": "请在config/config.py中配置OLLAMA_DATA或CHATGPT_DATA", "done": True}, ensure_ascii=False) + "\n\n"
-                return
-        
-        yield "data: " + json.dumps({"content": "", "done": True}, ensure_ascii=False) + "\n\n"
-        logging.info("流式回复生成完成")
-        
-    except Exception as e:
-        logging.error(f"流式生成错误: {e}")
-        yield "data: " + json.dumps({"content": f"\n\n**错误**: {str(e)}", "done": True}, ensure_ascii=False) + "\n\n"
+def build_model_messages(
+    messages: list[dict[str, str]],
+    mode: str = "chat",
+    file_context: str | None = None,
+) -> list[dict[str, str]]:
+    history_text = build_history_text(messages)
+    current_query = build_current_query(messages, file_context)
 
+    bot_key = "agent" if mode == "agent" else "chat"
+    bot_config = BOT_DATA[bot_key]
+    prompt_data = AGENT_BOT_PROMPT_DATA if mode == "agent" else CHATBOT_PROMPT_DATA
 
-def save_conversation(session_id, messages, mode):
-    """保存对话到历史"""
-    if not redis_client:
-        return
-    
-    try:
-        preview = messages[0]['content'][:50] if messages else '无内容'
-        conversation_data = {
-            'session_id': session_id,
-            'messages': messages,
-            'mode': mode,
-            'timestamp': datetime.now().isoformat(),
-            'preview': preview,
-            'message_count': len(messages)
-        }
-        
-        # Redis存储（保存7天）
-        key = f"web_chat_history:{session_id}"
-        redis_client.setex(key, 86400 * 7, json.dumps(conversation_data, ensure_ascii=False))
-        
-        # 更新会话列表（先删除旧的同session_id记录，避免重复）
-        session_list_key = "web_chat_sessions"
-        
-        # 查找并删除已存在的同session_id记录
-        existing_sessions = redis_client.lrange(session_list_key, 0, -1)
-        for existing_session in existing_sessions:
-            try:
-                session_data = json.loads(existing_session.decode('utf-8'))
-                if session_data.get('session_id') == session_id:
-                    redis_client.lrem(session_list_key, 1, existing_session)
-                    break
-            except:
-                continue
-        
-        # 添加新的会话记录
-        session_info = {
-            'session_id': session_id,
-            'timestamp': conversation_data['timestamp'],
-            'preview': preview,
-            'mode': mode,
-            'message_count': len(messages)
-        }
-        redis_client.lpush(session_list_key, json.dumps(session_info, ensure_ascii=False))
-        redis_client.ltrim(session_list_key, 0, 99)  # 只保留最近100条
-        
-    except Exception as e:
-        logging.error(f"保存对话历史失败: {e}")
+    prompt_kwargs = {
+        "name": bot_config.get("name"),
+        "capabilities": bot_config.get("capabilities"),
+        "welcome_message": bot_config.get("default_responses", {}).get("welcome_message"),
+        "unknown_command": bot_config.get("default_responses", {}).get("unknown_command"),
+        "language_support": bot_config.get("language_support"),
+        "history": history_text if history_text else "无历史记录",
+        "query": current_query,
+    }
 
-
-@app.route('/')
-def index():
-    """主页"""
-    html_file = 'web_page.html'
-    if os.path.exists(html_file):
-        with open(html_file, 'r', encoding='utf-8') as f:
-            return f.read()
-    else:
-        return "<h1>Web Bot</h1><p>未找到test_page.html文件</p>", 404
-
-
-@app.route('/upload/file', methods=['POST'])
-def upload_file():
-    """文件上传接口（支持文档、音频、视频等）"""
-    try:
-        if 'file' not in request.files:
-            return jsonify({'success': False, 'error': '没有文件被上传'}), 400
-        
-        file = request.files['file']
-        
-        if file.filename == '':
-            return jsonify({'success': False, 'error': '文件名为空'}), 400
-        
-        if not allowed_file(file.filename, 'all'):
-            return jsonify({'success': False, 'error': f'不支持的文件类型: {file.filename}'}), 400
-        
-        # 保存文件
-        filename = secure_filename(file.filename)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        unique_filename = f"{timestamp}_{filename}"
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-        
-        file.save(file_path)
-        logging.info(f"文件上传成功: {file_path}")
-        
-        # 处理文件
-        result = file_processor.process_file(file_path)
-        
-        if result.get('success'):
-            # 生成文本内容（供大模型使用）
-            text_content = file_processor.convert_to_text(file_path)
-            
-            return jsonify({
-                'success': True,
-                'file_path': file_path,
-                'file_name': unique_filename,
-                'file_type': result.get('type'),
-                'file_info': result,
-                'text_content': text_content[:500] + '...' if len(text_content) > 500 else text_content,  # 返回前500字符预览
-                'message': '文件上传且处理成功'
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': result.get('error', '文件处理失败'),
-                'file_path': file_path
-            }), 500
-            
-    except Exception as e:
-        logging.error(f"文件上传失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/upload/image', methods=['POST'])
-def upload_image():
-    """图片上传接口 - 只保存文件，不调用视觉模型（延迟到发送消息时处理）"""
-    try:
-        if 'file' not in request.files:
-            return jsonify({'success': False, 'error': '没有图片被上传'}), 400
-        
-        file = request.files['file']
-        
-        if file.filename == '':
-            return jsonify({'success': False, 'error': '文件名为空'}), 400
-        
-        if not allowed_file(file.filename, 'image'):
-            return jsonify({'success': False, 'error': f'不支持的图片类型: {file.filename}'}), 400
-        
-        # 保存图片
-        filename = secure_filename(file.filename)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        unique_filename = f"{timestamp}_{filename}"
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-        
-        file.save(file_path)
-        logging.info(f"图片上传成功: {file_path}")
-        
-        # 只获取图片基础信息，不调用视觉模型（延迟处理）
-        try:
-            from PIL import Image
-            with Image.open(file_path) as img:
-                width, height = img.size
-        except Exception as e:
-            width, height = 0, 0
-            logging.warning(f"无法获取图片尺寸: {e}")
-        
-        return jsonify({
-            'success': True,
-            'file_path': file_path,
-            'file_name': unique_filename,
-            'file_type': 'image',
-            'width': width,
-            'height': height,
-            'message': '图片上传成功，发送消息时将自动分析图片内容'
-        })
-            
-    except Exception as e:
-        logging.error(f"图片上传失败: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/chat/stream', methods=['POST'])
-def chat_stream():
-    """流式聊天接口"""
-    try:
-        data = request.get_json()
-        messages = data.get('messages', [])
-        mode = data.get('mode', 'chat')
-        session_id = data.get('session_id', str(uuid.uuid4()))
-        file_path = data.get('file_path')  # 文件路径（可选）
-        
-        # 保存对话到历史
-        save_conversation(session_id, messages, mode)
-        
-        # 直接传递file_path，延迟到流式响应时处理图片/文件
-        return Response(
-            stream_with_context(generate_stream_response(messages, mode, file_path)),
-            mimetype='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'X-Accel-Buffering': 'no'
+    if mode == "agent":
+        prompt_kwargs.update(
+            {
+                "current_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "user_id": "web_user",
+                "user_name": "Web用户",
             }
         )
-    except Exception as e:
-        logging.error(f"聊天接口错误: {e}")
-        return jsonify({"error": str(e)}), 500
+
+    system_prompt = prompt_data.get("description").format(**prompt_kwargs)
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": current_query},
+    ]
 
 
-@app.route('/chat/history', methods=['GET'])
-def get_history():
-    """获取历史会话列表"""
-    if not redis_client:
-        return jsonify({'success': False, 'error': 'Redis未连接'})
-    
+def chunk_text(text: str, chunk_size: int = PSEUDO_STREAM_CHUNK_SIZE) -> Iterable[str]:
+    for index in range(0, len(text), chunk_size):
+        yield text[index : index + chunk_size]
+
+
+def sse_event(content: str = "", done: bool = False, event_type: str = "content") -> str:
+    payload = {"type": event_type, "content": content, "done": done}
+    return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+def run_async(coro):
+    loop = asyncio.new_event_loop()
     try:
-        session_list_key = "web_chat_sessions"
-        sessions_data = redis_client.lrange(session_list_key, 0, 99)
-        
-        sessions = []
-        for session_data in sessions_data:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
+def iter_async_generator(async_gen) -> Iterable[object]:
+    loop = asyncio.new_event_loop()
+    aborted = False
+    exhausted = False
+
+    try:
+        asyncio.set_event_loop(loop)
+
+        while True:
             try:
-                session_info = json.loads(session_data.decode('utf-8'))
-                sessions.append(session_info)
-            except:
-                continue
-        
-        return jsonify({'success': True, 'sessions': sessions})
-    except Exception as e:
-        logging.error(f"获取历史失败: {e}")
-        return jsonify({'success': False, 'error': str(e)})
+                item = loop.run_until_complete(async_gen.__anext__())
+            except StopAsyncIteration:
+                exhausted = True
+                break
+
+            try:
+                yield item
+            except GeneratorExit:
+                aborted = True
+                raise
+    finally:
+        if not aborted and not exhausted:
+            try:
+                loop.run_until_complete(async_gen.aclose())
+            except Exception:
+                pass
+        if not aborted:
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+        asyncio.set_event_loop(None)
+        loop.close()
 
 
-@app.route('/chat/history/<session_id>', methods=['GET', 'DELETE'])
-def manage_session_history(session_id):
-    """管理指定会话的历史记录（查询/删除）"""
-    if not redis_client:
-        return jsonify({'success': False, 'error': 'Redis未连接'})
-    
+async def invoke_base_model(
+    messages: list[dict[str, str]],
+    mode: str = "chat",
+    file_context: str | None = None,
+) -> str:
+    model = create_model_client()
+    return await model.ainvoke(build_model_messages(messages, mode, file_context))
+
+
+def iter_base_model_chunks(
+    messages: list[dict[str, str]],
+    mode: str = "chat",
+    file_context: str | None = None,
+) -> Iterable[str]:
+    model = create_model_client()
+    model_name = getattr(model, "model", model.__class__.__name__)
+    model_messages = build_model_messages(messages, mode, file_context)
+    loop = asyncio.new_event_loop()
+    stream = None
+
     try:
-        if request.method == 'GET':
-            # 从Redis获取
-            key = f"web_chat_history:{session_id}"
+        asyncio.set_event_loop(loop)
+        stream = model.astream(model_messages)
+
+        while True:
+            try:
+                chunk = loop.run_until_complete(stream.__anext__())
+            except StopAsyncIteration:
+                break
+
+            if chunk:
+                yield chunk
+
+    except Exception as exc:
+        logger.warning(
+            "Streaming failed for %s, using pseudo-stream fallback via ainvoke: %s",
+            model_name,
+            exc,
+        )
+        response = loop.run_until_complete(model.ainvoke(model_messages))
+        for chunk in chunk_text(response):
+            yield chunk
+            time.sleep(PSEUDO_STREAM_DELAY_SECONDS)
+    finally:
+        if stream is not None:
+            try:
+                loop.run_until_complete(stream.aclose())
+            except Exception:
+                pass
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
+async def run_agentbot(
+    messages: list[dict[str, str]],
+    file_context: str | None = None,
+    file_path: str | None = None,
+) -> str:
+    current_query = build_current_query(messages, file_context)
+
+    try:
+        from server.bot.agent_bot import AgentBot
+    except ModuleNotFoundError as exc:
+        logger.warning("AgentBot dependencies missing, fallback to base mode: %s", exc)
+        return await invoke_base_model(messages, mode="agent", file_context=file_context)
+
+    try:
+        agent_bot = AgentBot(
+            query=current_query,
+            user_id="web_user",
+            user_name="Web用户",
+        )
+        return await agent_bot.run(
+            user_name="Web用户",
+            query=current_query,
+            image_path=file_path
+            if file_path and Path(file_path).suffix.lower() in IMAGE_EXTENSIONS
+            else None,
+            file_path=file_path
+            if file_path and Path(file_path).suffix.lower() not in IMAGE_EXTENSIONS
+            else None,
+            user_id="web_user",
+        )
+    except ModuleNotFoundError as exc:
+        logger.warning("AgentBot runtime dependencies missing, fallback to base mode: %s", exc)
+        return await invoke_base_model(messages, mode="agent", file_context=file_context)
+
+
+def iter_agentbot_events(
+    messages: list[dict[str, str]],
+    file_context: str | None = None,
+    file_path: str | None = None,
+) -> Iterable[dict[str, str]]:
+    current_query = build_current_query(messages, file_context)
+    yield {"type": "status", "content": "已收到请求，正在准备智能体..."}
+
+    try:
+        from server.bot.agent_bot import AgentBot
+    except ModuleNotFoundError as exc:
+        logger.warning("AgentBot dependencies missing, fallback to base mode: %s", exc)
+        yield {"type": "status", "content": "智能体依赖缺失，正在切换到基础模型..."}
+        response = run_async(invoke_base_model(messages, mode="agent", file_context=file_context))
+        yield {"type": "content", "content": response}
+        return
+
+    try:
+        agent_bot = AgentBot(
+            query=current_query,
+            user_id="web_user",
+            user_name="Web用户",
+        )
+        stream = agent_bot.astream(
+            user_name="Web用户",
+            query=current_query,
+            image_path=file_path
+            if file_path and Path(file_path).suffix.lower() in IMAGE_EXTENSIONS
+            else None,
+            file_path=file_path
+            if file_path and Path(file_path).suffix.lower() not in IMAGE_EXTENSIONS
+            else None,
+            user_id="web_user",
+        )
+        yield from iter_async_generator(stream)
+    except ModuleNotFoundError as exc:
+        logger.warning("AgentBot runtime dependencies missing, fallback to base mode: %s", exc)
+        yield {"type": "status", "content": "智能体运行依赖缺失，正在切换到基础模型..."}
+        response = run_async(invoke_base_model(messages, mode="agent", file_context=file_context))
+        yield {"type": "content", "content": response}
+    except Exception as exc:
+        logger.warning("Agent streaming failed, fallback to pseudo-stream: %s", exc)
+        yield {"type": "status", "content": "智能体流式输出异常，正在回退到普通模式..."}
+        response = run_async(
+            run_agentbot(messages, file_context=file_context, file_path=file_path)
+        )
+        for chunk in chunk_text(response):
+            yield {"type": "content", "content": chunk}
+            time.sleep(PSEUDO_STREAM_DELAY_SECONDS)
+
+
+def make_client_file_path(file_path: Path) -> str:
+    return file_path.relative_to(APP_ROOT).as_posix()
+
+
+def resolve_uploaded_file_path(file_path: str | None) -> Path | None:
+    if not file_path:
+        return None
+
+    candidate = Path(file_path)
+    if not candidate.is_absolute():
+        candidate = (APP_ROOT / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+
+    try:
+        candidate.relative_to(UPLOAD_ROOT)
+    except ValueError:
+        return None
+
+    if not candidate.exists() or not candidate.is_file():
+        return None
+
+    return candidate
+
+
+def build_file_context(file_path: Path | None) -> str | None:
+    if not file_path:
+        return None
+
+    if file_path.suffix.lower() in IMAGE_EXTENSIONS:
+        logger.info("Analyzing image: %s", file_path)
+        result = file_processor.process_image(str(file_path))
+        if not result.get("success"):
+            logger.error("Image processing failed: %s", result.get("error"))
+            return f"[图片处理失败: {result.get('error', '未知错误')}]"
+
+        vision_description = result.get("vision_description", "")
+        if vision_description:
+            return (
+                "[用户上传了一张图片，以下是图片内容分析]\n"
+                f"图片尺寸: {result.get('width')}x{result.get('height')}像素\n"
+                f"图片内容描述: {vision_description}\n\n"
+                "请根据以上图片信息回答用户的问题。"
+            )
+
+        basic_description = result.get("basic_description", "")
+        logger.warning("Vision model returned empty result, using basic description")
+        return (
+            "[用户上传了一张图片]\n"
+            f"图片尺寸: {result.get('width')}x{result.get('height')}像素\n"
+            f"基础信息: {basic_description}\n\n"
+            "请根据图片信息回答用户的问题。"
+        )
+
+    try:
+        logger.info("Reading file content: %s", file_path)
+        return file_processor.convert_to_text(str(file_path))
+    except Exception as exc:
+        logger.error("File processing failed: %s", exc)
+        return f"[文件处理失败: {exc}]"
+
+
+def build_preview(messages: list[dict[str, str]]) -> str:
+    for message in messages:
+        if message.get("role") == "user" and message.get("content"):
+            return message["content"][:50]
+    return "无内容"
+
+
+def session_history_key(session_id: str) -> str:
+    return f"{SESSION_KEY_PREFIX}{session_id}"
+
+
+def remove_session_summary(session_id: str) -> None:
+    if not redis_client:
+        return
+
+    for session_data in redis_client.lrange(SESSION_LIST_KEY, 0, -1):
+        try:
+            session_info = json.loads(session_data)
+        except json.JSONDecodeError:
+            redis_client.lrem(SESSION_LIST_KEY, 1, session_data)
+            continue
+
+        if session_info.get("session_id") == session_id:
+            redis_client.lrem(SESSION_LIST_KEY, 1, session_data)
+            break
+
+
+def load_session_summaries(prune_missing: bool = False) -> list[dict[str, object]]:
+    if not redis_client:
+        return []
+
+    sessions: list[dict[str, object]] = []
+    session_rows = redis_client.lrange(SESSION_LIST_KEY, 0, MAX_SESSION_LIST - 1)
+
+    for session_data in session_rows:
+        try:
+            session_info = json.loads(session_data)
+        except json.JSONDecodeError:
+            redis_client.lrem(SESSION_LIST_KEY, 1, session_data)
+            continue
+
+        session_id = session_info.get("session_id")
+        if not session_id:
+            redis_client.lrem(SESSION_LIST_KEY, 1, session_data)
+            continue
+
+        if prune_missing and not redis_client.exists(session_history_key(str(session_id))):
+            redis_client.lrem(SESSION_LIST_KEY, 1, session_data)
+            continue
+
+        sessions.append(session_info)
+
+    return sessions
+
+
+def save_conversation(session_id: str, messages: list[dict[str, str]], mode: str) -> None:
+    if not redis_client:
+        return
+
+    try:
+        conversation_data = {
+            "session_id": session_id,
+            "messages": messages,
+            "mode": mode,
+            "timestamp": datetime.now().isoformat(),
+            "preview": build_preview(messages),
+            "message_count": len(messages),
+        }
+
+        key = session_history_key(session_id)
+        redis_client.setex(key, SESSION_TTL_SECONDS, json.dumps(conversation_data, ensure_ascii=False))
+
+        remove_session_summary(session_id)
+
+        session_summary = {
+            "session_id": session_id,
+            "timestamp": conversation_data["timestamp"],
+            "preview": conversation_data["preview"],
+            "mode": mode,
+            "message_count": len(messages),
+        }
+        redis_client.lpush(SESSION_LIST_KEY, json.dumps(session_summary, ensure_ascii=False))
+        redis_client.ltrim(SESSION_LIST_KEY, 0, MAX_SESSION_LIST - 1)
+    except Exception as exc:
+        logger.error("Failed to save conversation: %s", exc)
+
+
+def save_uploaded_file(file_storage) -> Path:
+    original_name = secure_filename(file_storage.filename or "")
+    if not original_name:
+        suffix = Path(file_storage.filename or "").suffix
+        original_name = f"upload{suffix}"
+
+    unique_name = f"{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}_{original_name}"
+    file_path = UPLOAD_ROOT / unique_name
+    file_storage.save(file_path)
+    return file_path
+
+
+def validate_upload_request(expected_type: str = "all"):
+    if "file" not in request.files:
+        return None, (jsonify({"success": False, "error": "没有文件被上传"}), 400)
+
+    file_storage = request.files["file"]
+    if file_storage.filename == "":
+        return None, (jsonify({"success": False, "error": "文件名为空"}), 400)
+
+    if not allowed_file(file_storage.filename, expected_type):
+        return None, (
+            jsonify({"success": False, "error": f"不支持的文件类型: {file_storage.filename}"}),
+            400,
+        )
+
+    return file_storage, None
+
+
+def generate_stream_response(
+    messages: list[dict[str, str]],
+    mode: str,
+    session_id: str,
+    file_path: Path | None = None,
+):
+    file_context = build_file_context(file_path)
+    assistant_chunks: list[str] = []
+
+    save_conversation(session_id, messages, mode)
+
+    try:
+        if mode == "agent":
+            for event in iter_agentbot_events(
+                messages,
+                file_context=file_context,
+                file_path=str(file_path) if file_path else None,
+            ):
+                event_type = event.get("type", "content")
+                content = event.get("content", "")
+                if event_type == "content" and content:
+                    assistant_chunks.append(content)
+                yield sse_event(content, event_type=event_type)
+        else:
+            logger.info("Starting streaming response")
+            for chunk in iter_base_model_chunks(messages, mode="chat", file_context=file_context):
+                assistant_chunks.append(chunk)
+                yield sse_event(chunk)
+
+        assistant_message = "".join(assistant_chunks)
+        if assistant_message:
+            messages.append({"role": "assistant", "content": assistant_message})
+            save_conversation(session_id, messages, mode)
+
+        yield sse_event("", done=True)
+        logger.info("Streaming response completed")
+    except Exception as exc:
+        logger.error("Streaming response failed: %s", exc)
+        error_message = f"\n\n**错误**: {exc}"
+        messages.append({"role": "assistant", "content": error_message})
+        save_conversation(session_id, messages, mode)
+        yield sse_event(error_message, done=True)
+
+
+@app.route("/")
+def index():
+    if HTML_FILE.exists():
+        return HTML_FILE.read_text(encoding="utf-8")
+    return "<h1>Web Bot</h1><p>未找到 web_page.html 文件</p>", 404
+
+
+@app.route("/upload/file", methods=["POST"])
+def upload_file():
+    file_storage, error_response = validate_upload_request("all")
+    if error_response:
+        return error_response
+
+    try:
+        file_path = save_uploaded_file(file_storage)
+        logger.info("File uploaded: %s", file_path)
+
+        result = file_processor.process_file(str(file_path))
+        if not result.get("success"):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": result.get("error", "文件处理失败"),
+                        "file_path": make_client_file_path(file_path),
+                    }
+                ),
+                500,
+            )
+
+        text_content = file_processor.convert_to_text(str(file_path)) or ""
+        return jsonify(
+            {
+                "success": True,
+                "file_path": make_client_file_path(file_path),
+                "file_name": file_path.name,
+                "file_type": result.get("type"),
+                "file_info": result,
+                "text_content": text_content[:500] + "..." if len(text_content) > 500 else text_content,
+                "message": "文件上传且处理成功",
+            }
+        )
+    except Exception as exc:
+        logger.error("File upload failed: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/upload/image", methods=["POST"])
+def upload_image():
+    file_storage, error_response = validate_upload_request("image")
+    if error_response:
+        return error_response
+
+    try:
+        file_path = save_uploaded_file(file_storage)
+        logger.info("Image uploaded: %s", file_path)
+
+        width = 0
+        height = 0
+        try:
+            from PIL import Image
+
+            with Image.open(file_path) as image:
+                width, height = image.size
+        except Exception as exc:
+            logger.warning("Failed to read image size: %s", exc)
+
+        return jsonify(
+            {
+                "success": True,
+                "file_path": make_client_file_path(file_path),
+                "file_name": file_path.name,
+                "file_type": "image",
+                "width": width,
+                "height": height,
+                "message": "图片上传成功，发送消息时将自动分析图片内容",
+            }
+        )
+    except Exception as exc:
+        logger.error("Image upload failed: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/chat/stream", methods=["POST"])
+def chat_stream():
+    data = request.get_json(silent=True) or {}
+    messages = sanitize_messages(data.get("messages", []))
+    mode = data.get("mode", "chat")
+    session_id = str(data.get("session_id") or f"session_{uuid.uuid4().hex}")
+    file_path_value = data.get("file_path")
+
+    if not messages:
+        return jsonify({"success": False, "error": "消息内容不能为空"}), 400
+
+    if mode not in VALID_MODES:
+        return jsonify({"success": False, "error": f"不支持的模式: {mode}"}), 400
+
+    file_path = None
+    if file_path_value:
+        file_path = resolve_uploaded_file_path(file_path_value)
+        if file_path is None:
+            return jsonify({"success": False, "error": "文件引用无效或已过期"}), 400
+
+    return Response(
+        stream_with_context(generate_stream_response(messages, mode, session_id, file_path)),
+        mimetype="text/event-stream",
+        headers=SSE_HEADERS,
+    )
+
+
+@app.route("/chat/history", methods=["GET"])
+def get_history():
+    if not redis_client:
+        return jsonify({"success": False, "error": "Redis未连接"})
+
+    try:
+        sessions = load_session_summaries(prune_missing=True)
+
+        return jsonify({"success": True, "sessions": sessions})
+    except Exception as exc:
+        logger.error("Failed to read history: %s", exc)
+        return jsonify({"success": False, "error": str(exc)})
+
+
+@app.route("/chat/history/<session_id>", methods=["GET", "DELETE"])
+def manage_session_history(session_id: str):
+    if not redis_client:
+        return jsonify({"success": False, "error": "Redis未连接"})
+
+    try:
+        key = session_history_key(session_id)
+
+        if request.method == "GET":
             data = redis_client.get(key)
             if data:
-                session_data = json.loads(data.decode('utf-8'))
-                return jsonify({'success': True, 'session': session_data})
-            return jsonify({'success': False, 'error': '会话不存在'}), 404
-        
-        elif request.method == 'DELETE':
-            # 从Redis删除
-            key = f"web_chat_history:{session_id}"
-            redis_client.delete(key)
-            
-            # 从会话列表中移除
-            session_list_key = "web_chat_sessions"
-            sessions_data = redis_client.lrange(session_list_key, 0, -1)
-            
-            for session_data in sessions_data:
-                try:
-                    session_info = json.loads(session_data.decode('utf-8'))
-                    if session_info.get('session_id') == session_id:
-                        redis_client.lrem(session_list_key, 1, session_data)
-                        break
-                except:
-                    continue
-            
-            return jsonify({'success': True, 'message': '历史记录已删除'})
-    except Exception as e:
-        logging.error(f"管理历史记录失败: {e}")
-        return jsonify({'success': False, 'error': str(e)})
+                return jsonify({"success": True, "session": json.loads(data)})
+            remove_session_summary(session_id)
+            return jsonify({"success": False, "error": "会话不存在"}), 404
+
+        redis_client.delete(key)
+        remove_session_summary(session_id)
+
+        return jsonify({"success": True, "message": "历史记录已删除"})
+    except Exception as exc:
+        logger.error("Failed to manage history: %s", exc)
+        return jsonify({"success": False, "error": str(exc)})
 
 
-@app.route('/health', methods=['GET'])
+@app.route("/health", methods=["GET"])
 def health_check():
-    """健康检查"""
-    status = {
-        'status': 'running',
-        'timestamp': datetime.now().isoformat(),
-        'redis': 'connected' if redis_client else 'disconnected',
-        'ollama': OLLAMA_DATA.get('use', False),
-        'chatgpt': CHATGPT_DATA.get('use', False)
-    }
-    return jsonify(status)
+    return jsonify(
+        {
+            "status": "running",
+            "timestamp": datetime.now().isoformat(),
+            "redis": "connected" if redis_client else "disconnected",
+            "ollama": OLLAMA_DATA.get("use", False),
+            "chatgpt": CHATGPT_DATA.get("use", False),
+        }
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print("=" * 50)
-    print("AgentChatBot Web版本启动中...")
+    print("AgentChatBot Web starting...")
     print("=" * 50)
-    
-    # 检查模型配置
+
     if OLLAMA_DATA.get("use"):
-        print(f"✓ 使用Ollama模型: {OLLAMA_DATA.get('model')}")
+        print(f"Ollama enabled: {OLLAMA_DATA.get('model')}")
     if CHATGPT_DATA.get("use"):
-        print(f"✓ 使用ChatGPT模型: {CHATGPT_DATA.get('model')}")
+        print(f"ChatGPT compatible model enabled: {CHATGPT_DATA.get('model')}")
     if not OLLAMA_DATA.get("use") and not CHATGPT_DATA.get("use"):
-        print("⚠ 警告: 没有启用任何模型，请检查config/config.py配置")
-    
-    # 检查Redis
+        print("Warning: no model is enabled in config/config.py")
+
     if redis_client:
-        print(f"✓ Redis连接成功")
+        print("Redis connected")
     else:
-        print("⚠ Redis未连接，历史记录功能将不可用")
-    
-    # 检查HTML文件
-    if os.path.exists('web_page.html'):
-        print(f"✓ 找到界面文件: web_page.html")
+        print("Redis disconnected, history storage is unavailable")
+
+    if HTML_FILE.exists():
+        print("UI file found: web_page.html")
     else:
-        print("⚠ 未找到test_page.html文件")
-    
+        print("Warning: web_page.html was not found")
+
     print("=" * 50)
-    print("服务器启动成功！")
-    print("访问地址: http://127.0.0.1:5000")
-    print("按 Ctrl+C 停止服务")
+    print("Server ready at http://127.0.0.1:5000")
     print("=" * 50)
-    
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

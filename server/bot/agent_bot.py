@@ -1,4 +1,5 @@
 import traceback
+from typing import Any, AsyncIterator
 from langchain_core.prompts import MessagesPlaceholder, ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain.agents.agent import AgentExecutor
@@ -119,8 +120,150 @@ class AgentBot:
         self.agent_executor = AgentExecutor(
             agent=agent,
             tools=tools,
-            verbose=True
+            verbose=True,
+            return_intermediate_steps=True
         )
+
+    @staticmethod
+    def _contains_code_block(text: str) -> bool:
+        return isinstance(text, str) and "```" in text
+
+    @staticmethod
+    def _extract_tool_output(result: dict[str, Any], tool_name: str) -> str:
+        for step in reversed(result.get("intermediate_steps", [])):
+            if not isinstance(step, tuple) or len(step) != 2:
+                continue
+
+            action, observation = step
+            if getattr(action, "tool", "") != tool_name:
+                continue
+
+            if isinstance(observation, str) and observation.strip():
+                return observation.strip()
+
+        return ""
+
+    def _build_final_response(self, result: dict[str, Any]) -> str:
+        response = result.get("output", "Error occurred")
+        code_output = self._extract_tool_output(result, "code_gen")
+
+        if code_output and not self._contains_code_block(response):
+            return (
+                f"{response}\n\n"
+                "下面是这次生成的完整代码：\n\n"
+                f"{code_output}"
+            )
+
+        return response
+
+    def _build_combined_input(self, query, image_path, file_path, user_id, history):
+        return (
+            f"{query}\n"
+            f"用户id:{user_id}\n"
+            f"图像路径: {image_path}\n"
+            f"文件路径:{file_path}\n"
+            f"历史记录:\n {history}"
+        )
+
+    @staticmethod
+    def _tool_status_text(tool_name: str) -> str:
+        status_map = {
+            "code_gen": "正在生成代码，请稍等...",
+            "search_tool": "正在联网搜索并整理信息...",
+        }
+        return status_map.get(tool_name, f"正在调用工具 {tool_name} ...")
+
+    async def astream(
+        self,
+        user_name,
+        query,
+        image_path,
+        file_path,
+        user_id,
+    ) -> AsyncIterator[dict[str, str]]:
+        try:
+            self.manage_history()
+            self.history.append({"Human": query})
+
+            history = self.format_history()
+            combined_input = self._build_combined_input(query, image_path, file_path, user_id, history)
+
+            active_tool = None
+            code_tool_streamed = False
+            visible_parts = []
+            final_result = None
+
+            yield {"type": "status", "content": "正在分析你的问题，并规划处理步骤..."}
+
+            async for event in self.agent_executor.astream_events(
+                {"input": combined_input},
+                version="v2",
+            ):
+                event_name = event.get("event", "")
+                event_data = event.get("data", {})
+                event_node_name = event.get("name", "")
+
+                if event_name == "on_tool_start":
+                    active_tool = event_node_name
+                    yield {
+                        "type": "status",
+                        "content": self._tool_status_text(event_node_name),
+                    }
+                    continue
+
+                if event_name == "on_tool_end":
+                    if active_tool == "code_gen" and not code_tool_streamed:
+                        tool_output = event_data.get("output")
+                        if isinstance(tool_output, str) and tool_output.strip():
+                            visible_parts.append(tool_output)
+                            code_tool_streamed = True
+                            yield {"type": "content", "content": tool_output}
+                    elif active_tool and active_tool != "code_gen":
+                        yield {
+                            "type": "status",
+                            "content": "工具执行完成，正在整理最终回答...",
+                        }
+
+                    active_tool = None
+                    continue
+
+                if event_name == "on_chat_model_stream":
+                    chunk = event_data.get("chunk")
+                    chunk_text = getattr(chunk, "content", chunk)
+                    if not isinstance(chunk_text, str) or not chunk_text:
+                        continue
+
+                    if active_tool == "code_gen":
+                        visible_parts.append(chunk_text)
+                        code_tool_streamed = True
+                        yield {"type": "content", "content": chunk_text}
+                        continue
+
+                    if active_tool is None and not code_tool_streamed:
+                        visible_parts.append(chunk_text)
+                        yield {"type": "content", "content": chunk_text}
+                    continue
+
+                if event_name == "on_chain_end" and event_node_name == "AgentExecutor":
+                    output = event_data.get("output")
+                    if isinstance(output, dict):
+                        final_result = output
+
+            final_response = self._build_final_response(final_result) if isinstance(final_result, dict) else ""
+            streamed_response = "".join(visible_parts)
+
+            if final_response and not streamed_response:
+                yield {"type": "content", "content": final_response}
+            elif final_response and streamed_response and final_response.startswith(streamed_response):
+                remainder = final_response[len(streamed_response):]
+                if remainder:
+                    yield {"type": "content", "content": remainder}
+
+            self.save_history_to_redis(self.user_id, self.history)
+        except Exception as e:
+            logging.error(f"运行时发生错误: {e}")
+            traceback.print_exc()
+            yield {"type": "content", "content": "发生错误"}
 
     def format_history(self):
         """从Redis获取并格式化历史记录"""
@@ -189,12 +332,12 @@ class AgentBot:
             history = self.format_history()
 
             # 生成结合用户输入和历史记录的输入
-            combined_input = f"{query}\n用户id:{user_id}\n图像路径: {image_path}\n文件路径:{file_path}\n历史记录:\n {history}"
+            combined_input = self._build_combined_input(query, image_path, file_path, user_id, history)
 
             result = await asyncio.get_event_loop().run_in_executor(executor, lambda: self.agent_executor.invoke(
                 {"input": combined_input}))
 
-            response = result.get("output", "Error occurred")
+            response = self._build_final_response(result)
 
             # # 将生成的回复加入历史记录
             # self.history.append({

@@ -1,21 +1,33 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 #########################################  离线/本地的大模型信息  #########################################
 
 CHATGPT_DATA = {
     'use': True,
     'model': 'qwen-plus',  
-    'key': 'REDACTED_QWEN_KEY', 
+    'key': os.getenv('QWEN_API_KEY', ''),
     'url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    'temperature': 0.7,  # 生成内容的多样性程度，0-1 范围内
-    'vision_model': 'qwen-vl-plus',  # 视觉模型，用于图片内容分析（阿里云qwen-vl-plus）
+    'temperature': 0.7,
+    'vision_model': 'qwen-vl-plus',
+    'timeout': 120,
+    'stream_flush_chars': 24,
+    'stream_flush_interval': 0.12,
 }
 
 OLLAMA_DATA = {
     'use': True,  
-    'model': 'qwen:1.8b',  # ollama运行的模型名称
-    'code_model': 'qwen:1.8b',
+    # 'model': 'qwen:1.8b',  # ollama运行的模型名称
+    # 'code_model': 'qwen:1.8b',
+    'model': 'qwen3:14b',  # ollama运行的模型名称
+    'code_model': 'qwen3:14b',
     'key': 'EMPTY',
     'url': 'http://localhost:11434/api/chat',  # 本地 Ollama 服务地址
-    'api_url': "http://localhost:11434/v1/"
+    'api_url': "http://localhost:11434/v1/",
+    'stream_flush_chars': 24,
+    'stream_flush_interval': 0.12,
 }
 
 MOONSHOT_DATA = {
@@ -80,10 +92,10 @@ REDIS_DATA = {
 #########################################  feishu信息  #########################################
 
 FEISHU_DATA = {
-    "app_id":"REDACTED_FEISHU_APP_ID",  #应用凭证中的App ID
-    "app_secret":"REDACTED_FEISHU_SECRET", #应用凭证中的App Secret
-    "encrypt_key":"REDACTED_FEISHU_ENCRYPT", # 自建应用中的"事件与回调"下的加密策略中的Encrypt Key
-    "tenant_access_token":"t-g104crd8IC2EJFGPKBPN2RHOQDSB6PF3MVWA2EYY" #参考"开发文档"下的"服务端API"中的"认证与授权"下的"获取访问凭证"下的"自建应用获取 tenant_access_token"
+    "app_id": os.getenv("FEISHU_APP_ID", ""),
+    "app_secret": os.getenv("FEISHU_APP_SECRET", ""),
+    "encrypt_key": os.getenv("FEISHU_ENCRYPT_KEY", ""),
+    "verification_token": os.getenv("FEISHU_VERIFICATION_TOKEN", ""),
 }
 
 #########################################  搜索工具配置  #########################################
@@ -96,7 +108,7 @@ SEARCH_TOOL_CONFIG = {
     # 注册地址：https://tavily.com/
     'tavily': {
         'use': True,
-        'api_key': 'REDACTED_TAVILY_KEY',  # 在此填入你的 Tavily API Key
+        'api_key': os.getenv('TAVILY_API_KEY', ''),
         'max_results': 3,
         'search_depth': 'basic',  # basic 或 advanced
     },

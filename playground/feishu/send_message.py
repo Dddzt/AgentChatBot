@@ -1,53 +1,94 @@
-from lark_oapi.api.im.v1 import *
-import lark_oapi as lark
+"""
+飞书消息发送 —— 使用共享 Lark Client。
+支持发送、编辑（用于流式输出效果）。
+"""
 
-from config.config import FEISHU_DATA
+import json
+import logging
+
+import lark_oapi as lark
+from lark_oapi.api.im.v1 import (
+    CreateMessageRequest,
+    CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
+)
+
+from playground.feishu.lark_client import get_lark_client
+
+logger = logging.getLogger(__name__)
 
 
 class SendMessage:
-    def __init__(self, log_level=lark.LogLevel.INFO):
-        self.app_id = FEISHU_DATA.get('app_id')
-        self.app_secret = FEISHU_DATA.get('app_secret')
-        self.client = lark.Client.builder() \
-            .app_id(self.app_id) \
-            .app_secret(self.app_secret) \
-            .log_level(log_level) \
-            .build()
+    def __init__(self):
+        self.client = get_lark_client()
 
-    def send_message(self, message_params) -> dict:
-        """
-        发送消息给指定用户
-        :param client: 飞书客户端
-        :param receive_id: 接收消息的用户 open_id
-        :param msg_type: 消息类型, 比如 "text"
-        :param content: 消息内容 (JSON 格式字符串)
-        :param receive_id_type: ID 类型, 默认为 "open_id"
-        :return: 发送结果（字典形式）
-        """
-        # 构造请求对象
-        receive_id_type = message_params.get('receive_id_type')
-        receive_id = message_params.get('receive_id')
-        msg_type = message_params.get('msg_type')
-        content = message_params.get('content')
-        request = CreateMessageRequest.builder() \
-            .receive_id_type(receive_id_type) \
-            .request_body(CreateMessageRequestBody.builder()
-                          .receive_id(receive_id)
-                          .msg_type(msg_type)
-                          .content(content)  # 将文本内容转换为JSON
-                          .build()) \
-            .build()
+    def send_message(self, message_params: dict | None) -> dict:
+        """发送消息并返回 message_id（供后续 patch 使用）"""
+        if not message_params:
+            return {"success": False, "error": "message_params 为空"}
 
-        # 发起请求
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type(message_params["receive_id_type"])
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(message_params["receive_id"])
+                .msg_type(message_params["msg_type"])
+                .content(message_params["content"])
+                .build()
+            )
+            .build()
+        )
+
         response = self.client.im.v1.message.create(request)
 
-        # 处理失败返回
         if not response.success():
-            error_message = f"client.im.v1.message.create failed, code: {response.code}, msg: {response.msg}, log_id: {response.get_log_id()}"
-            lark.logger.error(error_message)
-            return {"success": False, "error": error_message}
+            error_msg = (
+                f"发送失败: code={response.code}, "
+                f"msg={response.msg}, log_id={response.get_log_id()}"
+            )
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
 
-        # 处理业务结果
-        result = lark.JSON.marshal(response.data, indent=4)
-        lark.logger.info(result)
-        return {"success": True, "data": result}
+        message_id = response.data.message_id if response.data else None
+        logger.info("[发送成功] message_id=%s", message_id)
+        return {"success": True, "message_id": message_id}
+
+    @staticmethod
+    def _build_card_content(text: str) -> str:
+        """构造一个仅含文本的简易卡片 JSON（lark_md 支持 Markdown + @用户）"""
+        card = {
+            "config": {"wide_screen_mode": True},
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": text},
+                }
+            ],
+        }
+        return json.dumps(card)
+
+    def patch_message(self, message_id: str, text: str) -> bool:
+        """编辑已发送的卡片消息内容（用于模拟流式输出）"""
+        request = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                PatchMessageRequestBody.builder()
+                .content(self._build_card_content(text))
+                .build()
+            )
+            .build()
+        )
+
+        response = self.client.im.v1.message.patch(request)
+
+        if not response.success():
+            logger.warning(
+                "[Patch失败] code=%s msg=%s, ext=%s",
+                response.code, response.msg,
+                getattr(response, 'ext', ''),
+            )
+            return False
+        return True

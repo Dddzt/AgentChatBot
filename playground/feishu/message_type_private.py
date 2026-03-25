@@ -1,207 +1,185 @@
+"""
+私聊消息格式化 —— 使用 Lark SDK 上传文件/图片/音频资源。
+消除硬编码路径和 global 变量。
+"""
+
 import json
 import os
 import subprocess
+import logging
 
-import requests
-from requests_toolbelt import MultipartEncoder # 输入pip install requests_toolbelt 安装依赖库
+import lark_oapi as lark
+from lark_oapi.api.im.v1 import (
+    CreateImageRequest,
+    CreateImageRequestBody,
+    CreateFileRequest,
+    CreateFileRequestBody,
+)
 
-from config.config import FEISHU_DATA
+from playground.feishu.lark_client import get_lark_client
+
+logger = logging.getLogger(__name__)
+
+MIME_MAP = {
+    ".pdf": ("pdf", "application/pdf"),
+    ".doc": ("doc", "application/msword"),
+    ".docx": ("doc", "application/msword"),
+    ".xls": ("xls", "application/vnd.ms-excel"),
+    ".xlsx": ("xls", "application/vnd.ms-excel"),
+    ".ppt": ("ppt", "application/vnd.ms-powerpoint"),
+    ".pptx": ("ppt", "application/vnd.ms-powerpoint"),
+    ".mp4": ("mp4", "video/mp4"),
+}
+
 
 class MessageTypePrivate:
-    """
-    格式化用户回复用户的消息的格式
-    """
-    def __init__(self,receive_id,receive_id_type):
+    """格式化私聊回复消息"""
+
+    def __init__(self, receive_id: str, receive_id_type: str):
         self.receive_id = receive_id
         self.receive_id_type = receive_id_type
 
-    def handle(self, message):
-        # 获取文件扩展名并转换为小写
-        _, file_extension = os.path.splitext(message)
-        file_extension = file_extension.lower()
-        # message 返回的内容是地址值
-        if file_extension == ".png":
-            image_key = get_image_key(message)
-            return self.image_message(image_key)
-        elif file_extension == ".mp3":
-            output_dir = "E:\\output\\test"
-            output_filename =  os.path.splitext(os.path.basename(message))[0]
-            opus_path = convert_to_opus(message,output_dir,output_filename)
-            audio_key = get_audio_key(opus_path)
-            return self.audio_message(audio_key)
-        elif file_extension in [".txt", ".doc", ".pdf"]:
-            file_key = get_file_key(message)
-            return self.file_message(file_key)
-        elif file_extension in [".mp4"]:
-            file_key = get_file_key(message)
-            # 视频的封面图 可以设置一个固定的封面图,也可以不设置封面图
-            image_path = None
-            image_key = get_image_key(image_path)
-            return self.vidio_message(file_key,image_key)
-        else:
-            return self.text_message(message)
+    def handle(self, message: str) -> dict | None:
+        _, ext = os.path.splitext(message)
+        ext = ext.lower()
 
-    def text_message(self,message):
+        if ext == ".png":
+            image_key = _upload_image(message)
+            return self._image_message(image_key)
+        elif ext == ".mp3":
+            opus_path = _convert_to_opus(message)
+            file_key = _upload_file(opus_path, "opus")
+            return self._audio_message(file_key)
+        elif ext in MIME_MAP:
+            file_key = _upload_file(message, MIME_MAP[ext][0])
+            if ext == ".mp4":
+                cover_key = _upload_image(message) if os.path.exists(message) else None
+                return self._video_message(file_key, cover_key)
+            return self._file_message(file_key)
+        else:
+            return self._text_message(message)
+
+    # ── 各消息类型格式化 ──────────────────────────────────
+
+    def _text_message(self, message: str) -> dict:
         return {
             "receive_id": self.receive_id,
-            "content": json.dumps({
-                        "text": message,
-                    }),
+            "content": json.dumps({"text": message}),
             "msg_type": "text",
-            "receive_id_type": self.receive_id_type
+            "receive_id_type": self.receive_id_type,
         }
 
-    def image_message(self,image_key):
-        if image_key:
-            return {
-                "receive_id": self.receive_id,
-                "content":json.dumps({
-                        "image_key": image_key,
-                    }),
-                "msg_type":"image",
-                "receive_id_type": self.receive_id_type
-            }
-        else:
+    def _image_message(self, image_key: str | None) -> dict | None:
+        if not image_key:
             return None
+        return {
+            "receive_id": self.receive_id,
+            "content": json.dumps({"image_key": image_key}),
+            "msg_type": "image",
+            "receive_id_type": self.receive_id_type,
+        }
 
-    def audio_message(self,audio_key):
-        if audio_key:
-            return {
-                "receive_id": self.receive_id,
-                "content":json.dumps({
-                        "file_key": audio_key,
-                    }),
-                "msg_type":"audio",
-                "receive_id_type": self.receive_id_type
-            }
-        else:
+    def _audio_message(self, audio_key: str | None) -> dict | None:
+        if not audio_key:
             return None
+        return {
+            "receive_id": self.receive_id,
+            "content": json.dumps({"file_key": audio_key}),
+            "msg_type": "audio",
+            "receive_id_type": self.receive_id_type,
+        }
 
-    def file_message(self,file_key):
-        if file_key:
-            return {
-                "receive_id": self.receive_id,
-                "content":json.dumps({
-                        "file_key": file_key
-                    }),
-                "msg_type":"file",
-                "receive_id_type": self.receive_id_type
-            }
-        else:
+    def _file_message(self, file_key: str | None) -> dict | None:
+        if not file_key:
             return None
+        return {
+            "receive_id": self.receive_id,
+            "content": json.dumps({"file_key": file_key}),
+            "msg_type": "file",
+            "receive_id_type": self.receive_id_type,
+        }
 
-    def vidio_message(self,file_key,image_key):
-        if file_key:
-            return {
-                "receive_id": self.receive_id,
-                "content":json.dumps({
-                        "file_key": file_key,
-                        "image_key": image_key
-                    }),
-                "msg_type":"media",
-                "receive_id_type": self.receive_id_type
-            }
-        else:
+    def _video_message(self, file_key: str | None, image_key: str | None) -> dict | None:
+        if not file_key:
             return None
+        return {
+            "receive_id": self.receive_id,
+            "content": json.dumps({"file_key": file_key, "image_key": image_key}),
+            "msg_type": "media",
+            "receive_id_type": self.receive_id_type,
+        }
 
-def get_image_key(image_path):
-    url = "https://open.feishu.cn/open-apis/im/v1/images"
-    form = {'image_type': 'message',
-            'image': (open(image_path, 'rb'))}  # 需要替换具体的path
-    multi_form = MultipartEncoder(form)
-    headers = {'Authorization': "Bearer " + FEISHU_DATA.get('tenant_access_token'),
-               'Content-Type': multi_form.content_type}
-    response = requests.request("POST", url, headers=headers, data=multi_form)
-    # 解析 JSON 响应
-    response_data = response.json()
-    if response_data.get("code") == 0:  # 检查请求是否成功
-        image_key = response_data['data']['image_key']
-        return image_key
-    else:
-        print("Error:", response_data.get("msg"))
+
+# ── SDK 上传工具函数 ──────────────────────────────────────
+
+
+def _upload_image(image_path: str) -> str | None:
+    """通过 Lark SDK 上传图片"""
+    try:
+        with open(image_path, "rb") as f:
+            image_data = f.read()
+
+        request = (
+            CreateImageRequest.builder()
+            .request_body(
+                CreateImageRequestBody.builder()
+                .image_type("message")
+                .image(image_data)
+                .build()
+            )
+            .build()
+        )
+        response = get_lark_client().im.v1.image.create(request)
+
+        if response.success():
+            return response.data.image_key
+        logger.error("[上传图片] 失败: code=%s, msg=%s", response.code, response.msg)
+        return None
+    except Exception as e:
+        logger.exception("[上传图片] 异常: %s", e)
         return None
 
 
-def convert_to_opus(source_file, output_dir, output_filename):
-    # 确保 output_filename 包含 .opus 扩展名
-    if not output_filename.endswith(".opus"):
-        output_filename += ".opus"
+def _upload_file(file_path: str, file_type: str) -> str | None:
+    """通过 Lark SDK 上传文件"""
+    try:
+        file_name = os.path.basename(file_path)
+        with open(file_path, "rb") as f:
+            file_data = f.read()
 
-    target_file = os.path.join(output_dir, output_filename)
+        request = (
+            CreateFileRequest.builder()
+            .request_body(
+                CreateFileRequestBody.builder()
+                .file_type(file_type)
+                .file_name(file_name)
+                .file(file_data)
+                .build()
+            )
+            .build()
+        )
+        response = get_lark_client().im.v1.file.create(request)
 
-    # 需要安装 ffmpeg ，安装教程网上搜索即可
-    command = [
-        "ffmpeg",
-        "-i", source_file,
-        "-acodec", "libopus",
-        "-ac", "1",
-        "-ar", "16000",
-        "-f", "opus",
-        target_file
-    ]
-
-    # 执行转换
-    subprocess.run(command)
-    return target_file
-
-def get_audio_key(file_path):
-    url = "https://open.feishu.cn/open-apis/im/v1/files"
-    file_name = os.path.basename(file_path)
-    form = {
-        'file_type': 'opus',
-        'file_name': file_name,
-        'file': (file_name, open(file_path, 'rb'), 'audio/opus')
-    }
-
-    multi_form = MultipartEncoder(form)
-    headers = {'Authorization': "Bearer " + FEISHU_DATA.get('tenant_access_token'),
-               'Content-Type': multi_form.content_type}
-
-    response = requests.request("POST", url, headers=headers, data=multi_form)
-    response_data = response.json()
-    if response_data.get("code") == 0:  # 检查请求是否成功
-        audio_key = response_data['data']['file_key']
-        return audio_key
-    else:
-        print("Error:", response_data.get("msg"))
+        if response.success():
+            return response.data.file_key
+        logger.error("[上传文件] 失败: code=%s, msg=%s", response.code, response.msg)
+        return None
+    except Exception as e:
+        logger.exception("[上传文件] 异常: %s", e)
         return None
 
-def get_file_key(file_path):
-    global file_type,mime_type
-    url = "https://open.feishu.cn/open-apis/im/v1/files"
-    file_name = os.path.basename(file_path)
-    if ".pdf" in file_name:
-        file_type = 'pdf'
-        mime_type = 'application/pdf'  # mime值参考 https://www.w3school.com.cn/media/media_mimeref.asp
-    elif ".doc" in file_name:
-        file_type = 'doc'
-        mime_type = 'application/msword'
-    elif ".xls" in file_name:
-        file_type = 'xls'
-        mime_type = 'application/vnd.ms-excel'
-    elif ".ppt" in file_name:
-        file_type = 'ppt'
-        mime_type = 'application/vnd.ms-powerpoint'
-    elif ".mp4" in file_name:
-        file_type = 'mp4'
-        mime_type = 'video/mp4'
 
-    form = {
-        'file_type': file_type,
-        'file_name': file_name,
-        'file': (file_name, open(file_path, 'rb'), mime_type)
-    }
+def _convert_to_opus(source_file: str) -> str:
+    """将音频文件转换为 opus 格式（飞书语音消息要求）"""
+    output_dir = os.path.join(os.path.dirname(source_file), "opus_cache")
+    os.makedirs(output_dir, exist_ok=True)
 
-    multi_form = MultipartEncoder(form)
-    headers = {'Authorization': "Bearer " + FEISHU_DATA.get('tenant_access_token'),
-               'Content-Type': multi_form.content_type}
+    base_name = os.path.splitext(os.path.basename(source_file))[0]
+    target = os.path.join(output_dir, f"{base_name}.opus")
 
-    response = requests.request("POST", url, headers=headers, data=multi_form)
-    response_data = response.json()
-    if response_data.get("code") == 0:  # 检查请求是否成功
-        file_key = response_data['data']['file_key']
-        print(file_key)
-        return file_key
-    else:
-        print("Error:", response_data.get("msg"))
-        return None
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", source_file, "-acodec", "libopus", "-ac", "1", "-ar", "16000", "-f", "opus", target],
+        check=True,
+        capture_output=True,
+    )
+    return target
