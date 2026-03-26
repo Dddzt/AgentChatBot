@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from server.bot.chat_bot import ChatBot
-from config.config import CHATGPT_DATA, OLLAMA_DATA
+from config.config import QWEN_DATA, OLLAMA_DATA
 
 # 配置日志
 logging.basicConfig(level=logging.INFO,
@@ -18,8 +18,8 @@ async def main():
     # 检查模型配置
     if OLLAMA_DATA.get("use"):
         print(f"当前使用Ollama模型: {OLLAMA_DATA.get('model')}")
-    elif CHATGPT_DATA.get("use"):
-        print(f"当前使用ChatGPT模型: {CHATGPT_DATA.get('model')}")
+    elif QWEN_DATA.get("use"):
+        print(f"当前使用ChatGPT模型: {QWEN_DATA.get('model')}")
     else:
         print("警告: 没有启用任何模型，请检查config/config.py配置")
     print("-" * 40)
@@ -54,7 +54,7 @@ async def main():
             
             if use_agent:
                 # 使用智能体模式
-                if CHATGPT_DATA.get("use"):
+                if QWEN_DATA.get("use"):
                     from server.bot.agent_bot import AgentBot
                     agent_bot = AgentBot(query=user_input, user_id="cli_user", user_name="CLI用户")
                     response = await agent_bot.run(
@@ -75,7 +75,7 @@ async def main():
                         user_id="cli_user"
                     )
                 else:
-                    response = "请在config/config.py中启用CHATGPT_DATA或OLLAMA_DATA"
+                    response = "请在config/config.py中启用QWEN_DATA或OLLAMA_DATA"
             else:
                 # 使用普通聊天模式
                 bot = ChatBot(user_id="cli_user", user_name="CLI用户")

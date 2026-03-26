@@ -6,7 +6,7 @@
     <title>智能对话机器人</title>
     <link rel="icon" href="data:,">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs.min.css">
     <style>
         :root {
@@ -192,7 +192,7 @@
             background: transparent;
             color: var(--text-soft);
             padding: 10px 16px;
-            min-width: 112px;
+            min-width: 85px;
             font-size: 13px;
             font-weight: 600;
             transition: background .2s, color .2s, box-shadow .2s;
@@ -203,6 +203,28 @@
             color: #fff;
             box-shadow: 0 14px 24px rgba(91, 99, 243, 0.28);
         }
+
+        .model-selector {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: var(--text-soft);
+        }
+        .model-selector label { font-weight: 600; white-space: nowrap; }
+        .model-selector select {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--surface);
+            color: var(--text);
+            padding: 8px 12px;
+            font-size: 13px;
+            font-weight: 500;
+            outline: none;
+            min-width: 140px;
+            transition: border-color .2s;
+        }
+        .model-selector select:focus { border-color: var(--brand); }
 
         .app-view {
             flex: 1;
@@ -850,6 +872,334 @@
             to { background-position: -200% 0; }
         }
 
+        /* ===== RAG 知识库选择器 ===== */
+        .kb-selector-bar {
+            display: none;
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #f0f4ff, #e8ecff);
+            border-bottom: 1px solid var(--border);
+            align-items: center;
+            gap: 12px;
+            font-size: 13px;
+        }
+        .kb-selector-bar.active { display: flex; }
+        .kb-selector-bar select {
+            flex: 1;
+            max-width: 300px;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: #fff;
+            font-size: 13px;
+            color: var(--text);
+        }
+        .kb-manage-btn {
+            border: 1px solid var(--brand);
+            border-radius: 10px;
+            background: transparent;
+            color: var(--brand);
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background .2s, color .2s;
+        }
+        .kb-manage-btn:hover { background: var(--brand); color: #fff; }
+
+        /* ===== 知识库管理 Modal ===== */
+        .kb-modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .kb-modal-overlay.active { display: flex; }
+        .kb-modal {
+            width: min(900px, 92vw);
+            max-height: 80vh;
+            background: #fff;
+            border-radius: var(--radius-lg);
+            box-shadow: 0 32px 80px rgba(0,0,0,0.18);
+            display: flex;
+            overflow: hidden;
+        }
+        .kb-modal-left {
+            width: 260px;
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            background: var(--surface-muted);
+        }
+        .kb-modal-left-header {
+            padding: 18px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .kb-modal-left-header h3 { font-size: 15px; margin: 0; }
+        .kb-create-btn {
+            border: none;
+            background: var(--brand);
+            color: #fff;
+            width: 30px;
+            height: 30px;
+            border-radius: 10px;
+            font-size: 18px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .kb-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+        }
+        .kb-list-item {
+            padding: 12px;
+            border-radius: 12px;
+            cursor: pointer;
+            margin-bottom: 4px;
+            transition: background .15s;
+        }
+        .kb-list-item:hover { background: rgba(91,99,243,0.06); }
+        .kb-list-item.active { background: rgba(91,99,243,0.12); border: 1px solid rgba(91,99,243,0.2); }
+        .kb-list-item .kb-item-name { font-weight: 600; font-size: 14px; }
+        .kb-list-item .kb-item-meta {
+            font-size: 12px;
+            color: var(--text-soft);
+            margin-top: 4px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .kb-index-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .kb-index-dot.indexed { background: var(--success); }
+        .kb-index-dot.not-indexed { background: #ccc; }
+
+        .kb-modal-right {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+        .kb-modal-right-header {
+            padding: 18px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .kb-modal-right-header h3 { font-size: 15px; margin: 0; }
+        .kb-modal-close {
+            border: none;
+            background: none;
+            font-size: 22px;
+            cursor: pointer;
+            color: var(--text-soft);
+            padding: 4px 8px;
+        }
+        .kb-detail-body { padding: 20px; flex: 1; }
+        .kb-field { margin-bottom: 16px; }
+        .kb-field label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-soft);
+            margin-bottom: 6px;
+        }
+        .kb-field input, .kb-field textarea {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-size: 13px;
+            font-family: inherit;
+        }
+        .kb-field textarea { resize: vertical; min-height: 60px; }
+        .kb-doc-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+        .kb-doc-table th, .kb-doc-table td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        .kb-doc-table th { font-weight: 600; color: var(--text-soft); font-size: 12px; }
+        .kb-doc-del-btn {
+            border: none;
+            background: none;
+            color: var(--danger);
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .kb-upload-area {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            color: var(--text-soft);
+            font-size: 13px;
+            margin-bottom: 16px;
+            position: relative;
+            transition: border-color .2s, background .2s;
+        }
+        .kb-upload-area:hover { border-color: var(--brand); background: rgba(91,99,243,0.03); }
+        .kb-upload-area input[type="file"] {
+            position: absolute;
+            inset: 0;
+            opacity: 0;
+            cursor: pointer;
+        }
+        .kb-action-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .kb-action-btn {
+            border: none;
+            border-radius: 10px;
+            padding: 8px 18px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background .2s;
+        }
+        .kb-action-btn.primary { background: var(--brand); color: #fff; }
+        .kb-action-btn.primary:hover { background: var(--brand-strong); }
+        .kb-action-btn.danger { background: var(--danger); color: #fff; }
+        .kb-action-btn.danger:hover { background: #d93e3e; }
+        .kb-index-status {
+            font-size: 12px;
+            color: var(--text-soft);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .kb-index-spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--border);
+            border-top-color: var(--brand);
+            border-radius: 50%;
+            animation: spin .6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .kb-empty-detail {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-soft);
+            font-size: 14px;
+        }
+
+        /* ===== Swarm 智能体状态栏 ===== */
+        .swarm-status-bar {
+            display: none;
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #f0fff4, #e8ffef);
+            border-bottom: 1px solid var(--border);
+            align-items: center;
+            gap: 10px;
+            font-size: 13px;
+        }
+        .swarm-status-bar.active { display: flex; }
+        .swarm-agent-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 20px;
+            background: var(--success);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .swarm-breadcrumb {
+            color: var(--text-soft);
+            font-size: 12px;
+        }
+        .swarm-breadcrumb span { margin: 0 4px; }
+
+        /* Swarm 聊天流中的事件指示器 */
+        .swarm-transfer-indicator {
+            text-align: center;
+            color: var(--success);
+            font-size: 12px;
+            padding: 6px 0;
+            font-weight: 600;
+        }
+        .swarm-tool-badge {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 8px;
+            background: #f0f0ff;
+            color: var(--brand);
+            font-size: 11px;
+            font-weight: 600;
+            margin: 2px 0;
+        }
+
+        /* ===== Swarm 智能体网络概览 ===== */
+        .swarm-network-overview {
+            display: none;
+            padding: 20px;
+        }
+        .swarm-network-overview.active { display: block; }
+        .swarm-network-graph {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+            padding: 20px;
+        }
+        .swarm-node {
+            padding: 12px 20px;
+            border-radius: 14px;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: center;
+            min-width: 140px;
+        }
+        .swarm-node.triage {
+            background: linear-gradient(135deg, #1e2436, #31395f);
+            color: #fff;
+            box-shadow: 0 8px 24px rgba(30,36,54,0.18);
+        }
+        .swarm-node-row {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .swarm-node.sub {
+            background: #fff;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+        }
+        .swarm-node .node-desc {
+            font-size: 11px;
+            font-weight: 400;
+            color: var(--text-soft);
+            margin-top: 4px;
+        }
+        .swarm-node.triage .node-desc { color: rgba(255,255,255,0.7); }
+        .swarm-arrow { color: var(--text-soft); font-size: 20px; }
+
         @media (max-width: 768px) {
             body {
                 flex-direction: column;
@@ -936,12 +1286,36 @@
                 新对话
             </button>
             <div class="mode-tabs">
-                <button class="mode-tab active" onclick="switchMode('chat', this)">聊天模式</button>
-                <button class="mode-tab" onclick="switchMode('agent', this)">智能体模式</button>
+                <button class="mode-tab active" data-mode="chat" onclick="switchMode('chat', this)">聊天</button>
+                <button class="mode-tab" data-mode="agent" onclick="switchMode('agent', this)">智能体</button>
+                <button class="mode-tab" data-mode="rag" onclick="switchMode('rag', this)">知识库</button>
+                <button class="mode-tab" data-mode="swarm" onclick="switchMode('swarm', this)">多智能体</button>
+            </div>
+            <div class="model-selector">
+                <label>模型:</label>
+                <select id="modelSelect" onchange="onModelChange(this.value)">
+                    <option value="">默认</option>
+                </select>
             </div>
         </header>
 
         <section class="app-view chat-view active" id="chatView" data-view="chat">
+            <!-- RAG 知识库选择器 -->
+            <div class="kb-selector-bar" id="kbSelectorBar">
+                <span style="font-weight:600;">知识库:</span>
+                <select id="kbSelect" onchange="onKbSelect(this.value)">
+                    <option value="">-- 请选择知识库 --</option>
+                </select>
+                <button class="kb-manage-btn" onclick="openKbModal()">管理知识库</button>
+            </div>
+
+            <!-- Swarm 智能体状态栏 -->
+            <div class="swarm-status-bar" id="swarmStatusBar">
+                <span style="font-weight:600;">当前智能体:</span>
+                <span class="swarm-agent-badge" id="swarmAgentBadge">等待中</span>
+                <span class="swarm-breadcrumb" id="swarmBreadcrumb"></span>
+            </div>
+
             <div class="chat-container" id="chatContainer">
                 <div class="welcome-section" id="welcomeSection">
                     <div class="welcome-icon">
@@ -949,6 +1323,29 @@
                     </div>
                     <h1 class="welcome-title">小D智能助手</h1>
                     <p class="welcome-desc">可以帮你完成各种任务，包括写作、分析、编程，以及结合图片和文件内容继续追问。</p>
+                    <div class="swarm-network-overview" id="swarmNetworkOverview">
+                        <div class="swarm-network-graph">
+                            <div class="swarm-node triage">
+                                分诊智能体
+                                <div class="node-desc">分析问题类型，自动路由</div>
+                            </div>
+                            <div class="swarm-arrow">↓</div>
+                            <div class="swarm-node-row">
+                                <div class="swarm-node sub">
+                                    代码助手
+                                    <div class="node-desc">代码生成/调试/解释</div>
+                                </div>
+                                <div class="swarm-node sub">
+                                    搜索助手
+                                    <div class="node-desc">联网搜索/信息整合</div>
+                                </div>
+                                <div class="swarm-node sub">
+                                    知识问答助手
+                                    <div class="node-desc">通用问答/总结分析</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 <div class="messages-list" id="messagesList"></div>
             </div>
@@ -1031,17 +1428,40 @@
             </div>
         </section>
     </main>
+
+    <!-- 知识库管理 Modal -->
+    <div class="kb-modal-overlay" id="kbModalOverlay" onclick="if(event.target===this)closeKbModal()">
+        <div class="kb-modal">
+            <div class="kb-modal-left">
+                <div class="kb-modal-left-header">
+                    <h3>知识库</h3>
+                    <button class="kb-create-btn" title="新建知识库" onclick="createKnowledgeBase()">+</button>
+                </div>
+                <div class="kb-list" id="kbModalList"></div>
+            </div>
+            <div class="kb-modal-right" id="kbModalRight">
+                <div class="kb-empty-detail">请选择或创建一个知识库</div>
+            </div>
+        </div>
+    </div>
+
     <script>
         let currentMode = "chat";
         let currentSection = "chat";
+        let currentModelProvider = "";
         let messages = [];
         let isStreaming = false;
         let isToolMenuOpen = false;
         let sessionId = id();
         let currentFilePath = null;
         let historySessions = [];
+        let currentKnowledgeBaseId = null;
+        let knowledgeBases = [];
+        let indexPollingTimer = null;
+        let swarmBreadcrumbTrail = [];
+        let kbModalSelectedId = null;
 
-        const MODE_LABELS = { chat: "聊天模式", agent: "智能体模式" };
+        const MODE_LABELS = { chat: "聊天模式", agent: "智能体模式", rag: "知识库问答模式", swarm: "多智能体模式" };
         const FILE_TYPE_ICONS = { document: "📄", audio: "🎵", video: "🎬", image: "🖼️" };
         const MAX_UPLOAD_SIZE = 50 * 1024 * 1024;
 
@@ -1109,12 +1529,35 @@
             const imageToolItem = document.getElementById("imageToolItem");
             const fileToolItem = document.getElementById("fileToolItem");
             const modeHint = document.getElementById("modeHint");
+            const kbBar = document.getElementById("kbSelectorBar");
+            const swarmBar = document.getElementById("swarmStatusBar");
+
             const showUploadTools = currentMode === "agent";
             imageToolItem.classList.toggle("hidden", !showUploadTools);
             fileToolItem.classList.toggle("hidden", !showUploadTools);
-            modeHint.textContent = currentMode === "agent"
-                ? "智能体模式已开启，可上传图片和文件作为上下文。"
-                : "聊天模式下可直接对话；切换到智能体模式后支持图片和文件解析。";
+
+            // RAG 知识库选择器
+            kbBar.classList.toggle("active", currentMode === "rag");
+            if (currentMode === "rag") refreshKbSelector();
+
+            // Swarm 状态栏
+            swarmBar.classList.toggle("active", currentMode === "swarm");
+            if (currentMode === "swarm") {
+                swarmBreadcrumbTrail = [];
+                document.getElementById("swarmAgentBadge").textContent = "等待中";
+                document.getElementById("swarmBreadcrumb").innerHTML = "";
+            }
+
+            // 欢迎区域动态化
+            updateWelcomeSection();
+
+            const hints = {
+                chat: "聊天模式下可直接对话；切换到智能体模式后支持图片和文件解析。",
+                agent: "智能体模式已开启，可上传图片和文件作为上下文。",
+                rag: "知识库模式：请先选择知识库，基于文档内容回答问题。",
+                swarm: "多智能体模式：分诊智能体自动路由到代码/搜索/问答专家。",
+            };
+            modeHint.textContent = hints[currentMode] || hints.chat;
         }
 
         function setToolMenuOpen(open) {
@@ -1153,12 +1596,15 @@
 
         function switchMode(mode, button) {
             if (!MODE_LABELS[mode]) return;
+            if (mode === currentMode) return;
             currentMode = mode;
-            document.querySelectorAll(".mode-tab").forEach((el) => el.classList.remove("active"));
-            if (button) button.classList.add("active");
+            document.querySelectorAll(".mode-tab").forEach((tab) => {
+                tab.classList.toggle("active", tab.dataset.mode === mode);
+            });
             updateUploads();
             if (currentFilePath) removeFile(false);
-            addSystemMessage(`已切换到${MODE_LABELS[mode]}`);
+            resetConversation(false);
+            addSystemMessage(`已切换到${MODE_LABELS[mode]}，已开始新对话`);
         }
 
         function newChat() {
@@ -1180,7 +1626,9 @@
         function renderMarkdown(container, content) {
             container.style.whiteSpace = "";
             container.innerHTML = content ? marked.parse(content) : "";
-            container.querySelectorAll("pre code").forEach((block) => hljs.highlightElement(block));
+            if (typeof hljs !== "undefined") {
+                container.querySelectorAll("pre code").forEach((block) => hljs.highlightElement(block));
+            }
         }
 
         function renderStreamingText(container, content) {
@@ -1326,6 +1774,13 @@
             const message = input.value.trim();
             if (!message || isStreaming) return;
 
+            // RAG 模式校验
+            if (currentMode === "rag" && !currentKnowledgeBaseId) {
+                addSystemMessage("请先选择一个知识库");
+                input.focus();
+                return;
+            }
+
             closeToolMenu();
             switchSection("chat", getNavButton("chat"));
             resetInput();
@@ -1338,6 +1793,8 @@
             try {
                 const body = { messages, mode: currentMode, session_id: sessionId };
                 if (currentFilePath) body.file_path = currentFilePath;
+                if (currentMode === "rag" && currentKnowledgeBaseId) body.knowledge_base_id = currentKnowledgeBaseId;
+                if (currentModelProvider) body.model_provider = currentModelProvider;
 
                 const response = await fetch("/chat/stream", {
                     method: "POST",
@@ -1388,6 +1845,11 @@
                     if (eventType === "status") {
                         latestStatus = payload.content || latestStatus;
                         if (!full) scheduleRender(false);
+                    } else if (eventType === "agent_transfer") {
+                        updateSwarmAgent(payload.content);
+                        insertTransferIndicator(payload.content);
+                    } else if (eventType === "tool_call") {
+                        insertToolCallBadge(payload.content);
                     } else if (payload.content) {
                         full += payload.content;
                         scheduleRender(false);
@@ -1571,8 +2033,8 @@
                 });
 
                 currentMode = MODE_LABELS[data.session.mode] ? data.session.mode : "chat";
-                document.querySelectorAll(".mode-tab").forEach((tab, index) => {
-                    tab.classList.toggle("active", ["chat", "agent"][index] === currentMode);
+                document.querySelectorAll(".mode-tab").forEach((tab) => {
+                    tab.classList.toggle("active", tab.dataset.mode === currentMode);
                 });
                 updateUploads();
 
@@ -1613,8 +2075,338 @@
             }
         }
 
+        // ======================== 欢迎区域动态化 ========================
+
+        function updateWelcomeSection() {
+            const title = document.querySelector(".welcome-title");
+            const desc = document.querySelector(".welcome-desc");
+            const networkOverview = document.getElementById("swarmNetworkOverview");
+
+            const configs = {
+                chat: { title: "小D智能助手", desc: "可以帮你完成各种任务，包括写作、分析、编程，以及结合图片和文件内容继续追问。" },
+                agent: { title: "智能体模式", desc: "支持代码生成、联网搜索等工具调用，可上传图片和文件作为上下文。" },
+                rag: { title: "知识库问答", desc: "请先选择或创建知识库，上传文档并构建索引后，即可基于文档内容精准问答。" },
+                swarm: { title: "多智能体协作", desc: "分诊智能体会自动分析你的问题，路由到代码助手、搜索助手或知识问答助手。" },
+            };
+            const cfg = configs[currentMode] || configs.chat;
+            if (title) title.textContent = cfg.title;
+            if (desc) desc.textContent = cfg.desc;
+
+            // Swarm 网络概览图
+            if (networkOverview) {
+                networkOverview.classList.toggle("active", currentMode === "swarm");
+            }
+        }
+
+        // ======================== Swarm 智能体 UI ========================
+
+        function updateSwarmAgent(agentName) {
+            if (!agentName) return;
+            const badge = document.getElementById("swarmAgentBadge");
+            const breadcrumb = document.getElementById("swarmBreadcrumb");
+            if (badge) badge.textContent = agentName;
+
+            if (!swarmBreadcrumbTrail.includes(agentName)) {
+                swarmBreadcrumbTrail.push(agentName);
+            }
+            if (breadcrumb) {
+                breadcrumb.innerHTML = swarmBreadcrumbTrail
+                    .map((name, i) => (i < swarmBreadcrumbTrail.length - 1 ? `${esc(name)} <span>→</span> ` : esc(name)))
+                    .join("");
+            }
+        }
+
+        function insertTransferIndicator(agentName) {
+            const indicator = document.createElement("div");
+            indicator.className = "swarm-transfer-indicator";
+            indicator.textContent = `—— 已切换至 [${agentName}] ——`;
+            document.getElementById("messagesList").appendChild(indicator);
+            scrollBottom();
+        }
+
+        function insertToolCallBadge(toolName) {
+            const badge = document.createElement("div");
+            badge.innerHTML = `<span class="swarm-tool-badge">🔧 ${esc(toolName)}()</span>`;
+            document.getElementById("messagesList").appendChild(badge);
+            scrollBottom();
+        }
+
+        // ======================== RAG 知识库 UI ========================
+
+        async function refreshKbSelector() {
+            try {
+                const resp = await fetch("/rag/knowledge-base");
+                const data = await resp.json();
+                if (!data.success) return;
+                knowledgeBases = data.knowledge_bases || [];
+                const select = document.getElementById("kbSelect");
+                const currentVal = select.value;
+                select.innerHTML = '<option value="">-- 请选择知识库 --</option>';
+                knowledgeBases.forEach((kb) => {
+                    const opt = document.createElement("option");
+                    opt.value = kb.kb_id;
+                    opt.textContent = `${kb.name} (${kb.doc_count}篇${kb.indexed ? ", 已索引" : ""})`;
+                    select.appendChild(opt);
+                });
+                if (currentVal && knowledgeBases.some(kb => kb.kb_id === currentVal)) {
+                    select.value = currentVal;
+                }
+            } catch (e) {
+                console.error("刷新知识库列表失败", e);
+            }
+        }
+
+        function onKbSelect(kbId) {
+            currentKnowledgeBaseId = kbId || null;
+        }
+
+        // ======================== 知识库管理 Modal ========================
+
+        function openKbModal() {
+            document.getElementById("kbModalOverlay").classList.add("active");
+            loadKbModalList();
+        }
+
+        function closeKbModal() {
+            document.getElementById("kbModalOverlay").classList.remove("active");
+            if (indexPollingTimer) { clearInterval(indexPollingTimer); indexPollingTimer = null; }
+            if (currentMode === "rag") refreshKbSelector();
+        }
+
+        async function loadKbModalList() {
+            try {
+                const resp = await fetch("/rag/knowledge-base");
+                const data = await resp.json();
+                knowledgeBases = data.knowledge_bases || [];
+                renderKbModalList();
+            } catch (e) {
+                console.error("加载知识库列表失败", e);
+            }
+        }
+
+        function renderKbModalList() {
+            const list = document.getElementById("kbModalList");
+            list.innerHTML = "";
+            if (!knowledgeBases.length) {
+                list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-soft);font-size:13px;">暂无知识库，点击 + 创建</div>';
+                return;
+            }
+            knowledgeBases.forEach((kb) => {
+                const item = document.createElement("div");
+                item.className = `kb-list-item${kb.kb_id === kbModalSelectedId ? " active" : ""}`;
+                item.innerHTML = `
+                    <div class="kb-item-name">${esc(kb.name)}</div>
+                    <div class="kb-item-meta">
+                        <span class="kb-index-dot ${kb.indexed ? "indexed" : "not-indexed"}"></span>
+                        ${kb.doc_count || 0} 篇文档
+                    </div>
+                `;
+                item.onclick = () => { kbModalSelectedId = kb.kb_id; renderKbModalList(); loadKbDetail(kb.kb_id); };
+                list.appendChild(item);
+            });
+        }
+
+        async function createKnowledgeBase() {
+            const name = prompt("请输入知识库名称：");
+            if (!name || !name.trim()) return;
+            try {
+                const resp = await fetch("/rag/knowledge-base", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name: name.trim(), description: "" }),
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    kbModalSelectedId = data.kb_id;
+                    await loadKbModalList();
+                    loadKbDetail(data.kb_id);
+                } else {
+                    alert(data.error || "创建失败");
+                }
+            } catch (e) {
+                alert("创建知识库失败: " + e.message);
+            }
+        }
+
+        async function loadKbDetail(kbId) {
+            const right = document.getElementById("kbModalRight");
+            try {
+                const resp = await fetch(`/rag/knowledge-base/${kbId}`);
+                const data = await resp.json();
+                if (!data.success) { right.innerHTML = `<div class="kb-empty-detail">${data.error}</div>`; return; }
+                const kb = data.knowledge_base;
+                const docs = kb.documents || [];
+
+                right.innerHTML = `
+                    <div class="kb-modal-right-header">
+                        <h3 id="kbDetailTitle">${esc(kb.name)}</h3>
+                        <button class="kb-modal-close" onclick="closeKbModal()">×</button>
+                    </div>
+                    <div class="kb-detail-body">
+                        <div class="kb-field">
+                            <label>名称</label>
+                            <input type="text" id="kbNameInput" value="${esc(kb.name)}" onchange="updateKbInfo('${kbId}')">
+                        </div>
+                        <div class="kb-field">
+                            <label>描述</label>
+                            <textarea id="kbDescInput" onchange="updateKbInfo('${kbId}')">${esc(kb.description || "")}</textarea>
+                        </div>
+                        <div class="kb-field">
+                            <label>文档列表 (${docs.length} 篇)</label>
+                            ${docs.length ? `
+                            <table class="kb-doc-table">
+                                <thead><tr><th>文件名</th><th>大小</th><th>上传时间</th><th></th></tr></thead>
+                                <tbody>
+                                    ${docs.map(d => `<tr>
+                                        <td>${esc(d.filename)}</td>
+                                        <td>${(d.size / 1024).toFixed(1)} KB</td>
+                                        <td>${formatDate(d.uploaded_at)}</td>
+                                        <td><button class="kb-doc-del-btn" onclick="deleteKbDoc('${kbId}','${d.doc_id}')">删除</button></td>
+                                    </tr>`).join("")}
+                                </tbody>
+                            </table>` : '<div style="color:var(--text-soft);font-size:13px;margin-bottom:12px;">暂无文档</div>'}
+                        </div>
+                        <div class="kb-upload-area">
+                            拖拽或点击上传文档（PDF / MD / TXT）
+                            <input type="file" accept=".pdf,.md,.txt" onchange="handleKbDocUpload(event, '${kbId}')" multiple>
+                        </div>
+                        <div class="kb-action-row">
+                            <button class="kb-action-btn primary" onclick="buildKbIndex('${kbId}')">构建索引</button>
+                            <button class="kb-action-btn danger" onclick="deleteKb('${kbId}')">删除知识库</button>
+                            <span class="kb-index-status" id="kbIndexStatus">
+                                ${kb.indexed
+                                    ? `<span class="kb-index-dot indexed"></span> 已索引${kb.chunk_count ? ` (${kb.chunk_count} 个片段)` : ""} - ${kb.index_time ? formatDate(kb.index_time) : ""}`
+                                    : `<span class="kb-index-dot not-indexed"></span> ${docs.length ? "文档已就绪，请构建索引" : "请先上传文档"}`}
+                            </span>
+                        </div>
+                    </div>
+                `;
+            } catch (e) {
+                right.innerHTML = `<div class="kb-empty-detail">加载失败: ${e.message}</div>`;
+            }
+        }
+
+        async function updateKbInfo(kbId) {
+            const name = document.getElementById("kbNameInput")?.value?.trim();
+            const description = document.getElementById("kbDescInput")?.value?.trim();
+            try {
+                await fetch(`/rag/knowledge-base/${kbId}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name, description }),
+                });
+                loadKbModalList();
+            } catch (e) {
+                console.error("更新知识库失败", e);
+            }
+        }
+
+        async function handleKbDocUpload(event, kbId) {
+            const files = event.target.files;
+            if (!files.length) return;
+            for (const file of files) {
+                try {
+                    const body = new FormData();
+                    body.append("file", file);
+                    const resp = await fetch(`/rag/knowledge-base/${kbId}/documents`, { method: "POST", body });
+                    const data = await resp.json();
+                    if (!data.success) alert(`上传 ${file.name} 失败: ${data.error}`);
+                } catch (e) {
+                    alert(`上传 ${file.name} 失败: ${e.message}`);
+                }
+            }
+            event.target.value = "";
+            loadKbDetail(kbId);
+            loadKbModalList();
+        }
+
+        async function deleteKbDoc(kbId, docId) {
+            if (!confirm("确定要删除这个文档吗？")) return;
+            try {
+                await fetch(`/rag/knowledge-base/${kbId}/documents/${docId}`, { method: "DELETE" });
+                loadKbDetail(kbId);
+                loadKbModalList();
+            } catch (e) {
+                alert("删除失败: " + e.message);
+            }
+        }
+
+        async function buildKbIndex(kbId) {
+            const statusEl = document.getElementById("kbIndexStatus");
+            try {
+                const resp = await fetch(`/rag/knowledge-base/${kbId}/index`, { method: "POST" });
+                const data = await resp.json();
+                if (!data.success) { alert(data.error); return; }
+                statusEl.innerHTML = '<span class="kb-index-spinner"></span> 正在构建索引...';
+                startIndexPolling(kbId);
+            } catch (e) {
+                alert("触发索引构建失败: " + e.message);
+            }
+        }
+
+        function startIndexPolling(kbId) {
+            if (indexPollingTimer) clearInterval(indexPollingTimer);
+            indexPollingTimer = setInterval(async () => {
+                try {
+                    const resp = await fetch(`/rag/knowledge-base/${kbId}/index-status`);
+                    const data = await resp.json();
+                    const statusEl = document.getElementById("kbIndexStatus");
+                    if (!statusEl) { clearInterval(indexPollingTimer); return; }
+                    if (data.status === "done") {
+                        clearInterval(indexPollingTimer);
+                        indexPollingTimer = null;
+                        statusEl.innerHTML = `<span class="kb-index-dot indexed"></span> 索引构建完成`;
+                        loadKbModalList();
+                    } else if (data.status === "error") {
+                        clearInterval(indexPollingTimer);
+                        indexPollingTimer = null;
+                        statusEl.innerHTML = `<span style="color:var(--danger);">${esc(data.progress)}</span>`;
+                    } else {
+                        statusEl.innerHTML = `<span class="kb-index-spinner"></span> ${esc(data.progress || "构建中...")}`;
+                    }
+                } catch (e) {
+                    console.error("轮询索引状态失败", e);
+                }
+            }, 2000);
+        }
+
+        async function deleteKb(kbId) {
+            if (!confirm("确定要删除这个知识库及其所有文档吗？")) return;
+            try {
+                await fetch(`/rag/knowledge-base/${kbId}`, { method: "DELETE" });
+                kbModalSelectedId = null;
+                document.getElementById("kbModalRight").innerHTML = '<div class="kb-empty-detail">请选择或创建一个知识库</div>';
+                loadKbModalList();
+                if (currentKnowledgeBaseId === kbId) currentKnowledgeBaseId = null;
+            } catch (e) {
+                alert("删除失败: " + e.message);
+            }
+        }
+
+        function onModelChange(value) {
+            currentModelProvider = value;
+        }
+
+        async function loadModels() {
+            try {
+                const resp = await fetch("/models");
+                const data = await resp.json();
+                if (!data.success) return;
+                const select = document.getElementById("modelSelect");
+                data.models.forEach(m => {
+                    const opt = document.createElement("option");
+                    opt.value = m.id;
+                    opt.textContent = m.name;
+                    select.appendChild(opt);
+                });
+            } catch (e) {
+                console.warn("加载模型列表失败:", e);
+            }
+        }
+
         document.addEventListener("DOMContentLoaded", () => {
             updateUploads();
+            loadModels();
             document.addEventListener("click", (event) => {
                 const wrap = document.querySelector(".tool-menu-wrap");
                 if (wrap && !wrap.contains(event.target)) closeToolMenu();

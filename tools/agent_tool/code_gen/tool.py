@@ -1,11 +1,11 @@
 import logging
 from typing import ClassVar
 import requests
-from langchain.agents import tool
+from langchain_core.tools import tool
 from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
 
-from config.config import OLLAMA_DATA, CHATGPT_DATA
+from config.config import OLLAMA_DATA, QWEN_DATA
 from config.templates.data.bot import CODE_BOT_PROMPT_DATA
 
 logging.basicConfig(
@@ -39,12 +39,12 @@ class CodeGenAPIWrapper(BaseModel):
 
     def run_chatgpt(self, query: str) -> str:
         """使用 ChatGPT/阿里云等在线 API 生成代码"""
-        logging.info(f"使用在线模型 {CHATGPT_DATA.get('model')} 处理用户请求: {query}")
+        logging.info(f"使用在线模型 {QWEN_DATA.get('model')} 处理用户请求: {query}")
         try:
             model = ChatOpenAI(
-                model=CHATGPT_DATA.get("model"),
-                api_key=CHATGPT_DATA.get("key"),
-                base_url=CHATGPT_DATA.get("url"),
+                model=QWEN_DATA.get("model"),
+                api_key=QWEN_DATA.get("key"),
+                base_url=QWEN_DATA.get("url"),
                 temperature=0.3  # 代码生成用较低温度
             )
             messages = [
@@ -60,7 +60,7 @@ class CodeGenAPIWrapper(BaseModel):
     def generate_code(self, query: str) -> str:
         try:
             # 优先使用配置中启用的模型
-            if CHATGPT_DATA.get("use") and CHATGPT_DATA.get("key"):
+            if QWEN_DATA.get("use") and QWEN_DATA.get("key"):
                 result = self.run_chatgpt(query)
             elif OLLAMA_DATA.get("use"):
                 result = self.run_ollama(query, self.model)

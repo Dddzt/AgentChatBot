@@ -20,9 +20,10 @@ from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
-from config.config import CHATGPT_DATA, FILE_CONFIG, OLLAMA_DATA, REDIS_DATA, UPLOAD_FOLDER
+from config.config import QWEN_DATA, FILE_CONFIG, MOONSHOT_DATA, OLLAMA_DATA, RAG_CONFIG, REDIS_DATA, UPLOAD_FOLDER
 from config.templates.data.bot import AGENT_BOT_PROMPT_DATA, BOT_DATA, CHATBOT_PROMPT_DATA
 from server.client.model_factory import create_model_client
+from server.rag.knowledge_base_manager import KnowledgeBaseManager
 from tools.file_processor import file_processor
 
 
@@ -51,7 +52,7 @@ HTML_FILE = APP_ROOT / "web_page.html"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp"}
 SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 MAX_SESSION_LIST = 100
-VALID_MODES = {"chat", "agent"}
+VALID_MODES = {"chat", "agent", "rag", "swarm"}
 SESSION_LIST_KEY = "web_chat_sessions"
 SESSION_KEY_PREFIX = "web_chat_history:"
 SSE_HEADERS = {
@@ -59,7 +60,7 @@ SSE_HEADERS = {
     "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
-PSEUDO_STREAM_CHUNK_SIZE = max(1, int(CHATGPT_DATA.get("stream_flush_chars", 24)))
+PSEUDO_STREAM_CHUNK_SIZE = max(1, int(QWEN_DATA.get("stream_flush_chars", 24)))
 PSEUDO_STREAM_DELAY_SECONDS = 0.02
 
 
@@ -98,6 +99,7 @@ def init_redis_client() -> redis.Redis | None:
 
 
 redis_client = init_redis_client()
+kb_manager = KnowledgeBaseManager()
 
 
 def allowed_file(filename: str, file_type: str = "all") -> bool:
@@ -250,8 +252,9 @@ async def invoke_base_model(
     messages: list[dict[str, str]],
     mode: str = "chat",
     file_context: str | None = None,
+    provider: str | None = None,
 ) -> str:
-    model = create_model_client()
+    model = create_model_client(mode=mode, provider=provider)
     return await model.ainvoke(build_model_messages(messages, mode, file_context))
 
 
@@ -259,8 +262,9 @@ def iter_base_model_chunks(
     messages: list[dict[str, str]],
     mode: str = "chat",
     file_context: str | None = None,
+    provider: str | None = None,
 ) -> Iterable[str]:
-    model = create_model_client()
+    model = create_model_client(mode=mode, provider=provider)
     model_name = getattr(model, "model", model.__class__.__name__)
     model_messages = build_model_messages(messages, mode, file_context)
     loop = asyncio.new_event_loop()
@@ -307,20 +311,22 @@ async def run_agentbot(
     messages: list[dict[str, str]],
     file_context: str | None = None,
     file_path: str | None = None,
+    model_provider: str | None = None,
 ) -> str:
     current_query = build_current_query(messages, file_context)
 
     try:
         from server.bot.agent_bot import AgentBot
-    except ModuleNotFoundError as exc:
+    except Exception as exc:
         logger.warning("AgentBot dependencies missing, fallback to base mode: %s", exc)
-        return await invoke_base_model(messages, mode="agent", file_context=file_context)
+        return await invoke_base_model(messages, mode="agent", file_context=file_context, provider=model_provider)
 
     try:
         agent_bot = AgentBot(
             query=current_query,
             user_id="web_user",
             user_name="Web用户",
+            provider=model_provider,
         )
         return await agent_bot.run(
             user_name="Web用户",
@@ -333,26 +339,27 @@ async def run_agentbot(
             else None,
             user_id="web_user",
         )
-    except ModuleNotFoundError as exc:
-        logger.warning("AgentBot runtime dependencies missing, fallback to base mode: %s", exc)
-        return await invoke_base_model(messages, mode="agent", file_context=file_context)
+    except Exception as exc:
+        logger.warning("AgentBot runtime failed, fallback to base mode: %s", exc)
+        return await invoke_base_model(messages, mode="agent", file_context=file_context, provider=model_provider)
 
 
 def iter_agentbot_events(
     messages: list[dict[str, str]],
     file_context: str | None = None,
     file_path: str | None = None,
+    model_provider: str | None = None,
 ) -> Iterable[dict[str, str]]:
     current_query = build_current_query(messages, file_context)
     yield {"type": "status", "content": "已收到请求，正在准备智能体..."}
 
     try:
         from server.bot.agent_bot import AgentBot
-    except ModuleNotFoundError as exc:
-        logger.warning("AgentBot dependencies missing, fallback to base mode: %s", exc)
-        yield {"type": "status", "content": "智能体依赖缺失，正在切换到基础模型..."}
-        response = run_async(invoke_base_model(messages, mode="agent", file_context=file_context))
-        yield {"type": "content", "content": response}
+    except Exception as exc:
+        logger.error("AgentBot import failed: %s", exc, exc_info=True)
+        yield {"type": "status", "content": "智能体依赖缺失，正在切换到基础模型流式输出..."}
+        for chunk in iter_base_model_chunks(messages, mode="agent", file_context=file_context, provider=model_provider):
+            yield {"type": "content", "content": chunk}
         return
 
     try:
@@ -360,6 +367,7 @@ def iter_agentbot_events(
             query=current_query,
             user_id="web_user",
             user_name="Web用户",
+            provider=model_provider,
         )
         stream = agent_bot.astream(
             user_name="Web用户",
@@ -373,20 +381,73 @@ def iter_agentbot_events(
             user_id="web_user",
         )
         yield from iter_async_generator(stream)
-    except ModuleNotFoundError as exc:
-        logger.warning("AgentBot runtime dependencies missing, fallback to base mode: %s", exc)
-        yield {"type": "status", "content": "智能体运行依赖缺失，正在切换到基础模型..."}
-        response = run_async(invoke_base_model(messages, mode="agent", file_context=file_context))
-        yield {"type": "content", "content": response}
     except Exception as exc:
-        logger.warning("Agent streaming failed, fallback to pseudo-stream: %s", exc)
-        yield {"type": "status", "content": "智能体流式输出异常，正在回退到普通模式..."}
-        response = run_async(
-            run_agentbot(messages, file_context=file_context, file_path=file_path)
-        )
-        for chunk in chunk_text(response):
+        logger.error("Agent streaming failed: %s", exc, exc_info=True)
+        yield {"type": "status", "content": "智能体流式输出异常，正在回退到流式模式..."}
+        for chunk in iter_base_model_chunks(messages, mode="agent", file_context=file_context, provider=model_provider):
             yield {"type": "content", "content": chunk}
-            time.sleep(PSEUDO_STREAM_DELAY_SECONDS)
+
+
+def iter_rag_events(
+    messages: list[dict[str, str]],
+    knowledge_base_id: str,
+    model_provider: str | None = None,
+) -> Iterable[dict[str, str]]:
+    """RAG 模式的流式事件生成器。"""
+    try:
+        from server.bot.rag_bot import RAGBot
+    except ImportError as exc:
+        logger.warning("RAGBot dependencies missing: %s", exc)
+        yield {"type": "status", "content": "知识库模块依赖缺失，无法使用。"}
+        return
+
+    # 验证知识库是否存在
+    kb_info = kb_manager.get(knowledge_base_id)
+    if kb_info is None:
+        yield {"type": "status", "content": "所选知识库不存在，请重新选择。"}
+        return
+
+    if not kb_info.get("indexed"):
+        yield {"type": "status", "content": f"知识库「{kb_info.get('name', '')}」尚未构建索引，请先在管理面板中构建索引。"}
+        return
+
+    try:
+        history_text = build_history_text(messages)
+        current_query = messages[-1]["content"] if messages else ""
+
+        if not current_query.strip():
+            yield {"type": "status", "content": "请输入问题内容。"}
+            return
+
+        rag_bot = RAGBot(knowledge_base_id)
+        stream = rag_bot.astream(question=current_query, history=history_text, provider=model_provider)
+        yield from iter_async_generator(stream)
+    except Exception as exc:
+        logger.error("RAG streaming failed: %s", exc)
+        yield {"type": "content", "content": f"知识库问答出错: {exc}"}
+
+
+def iter_swarm_events(
+    messages: list[dict[str, str]],
+) -> Iterable[dict[str, str]]:
+    """Swarm 模式的流式事件生成器。"""
+    try:
+        from server.bot.web_swarm_bot import WebSwarmBot
+    except ImportError as exc:
+        logger.warning("WebSwarmBot dependencies missing: %s", exc)
+        yield {"type": "status", "content": "协作体模块依赖缺失，无法使用。"}
+        return
+
+    try:
+        # 构建 Swarm 需要的消息格式
+        current_query = messages[-1]["content"] if messages else ""
+        swarm_messages = [{"role": "user", "content": current_query}]
+
+        swarm_bot = WebSwarmBot()
+        yield from swarm_bot.iter_events(swarm_messages)
+    except Exception as exc:
+        logger.error("Swarm streaming failed: %s", exc)
+        yield {"type": "content", "content": f"智能体协作出错: {exc}"}
 
 
 def make_client_file_path(file_path: Path) -> str:
@@ -567,14 +628,46 @@ def validate_upload_request(expected_type: str = "all"):
     return file_storage, None
 
 
+def _resolve_model_display(mode: str, provider: str | None) -> str:
+    """返回当前实际使用的模型名称，用于日志打印。"""
+    if provider == "ollama":
+        return f"Ollama ({OLLAMA_DATA.get('model', '?')})"
+    if provider == "moonshot":
+        return f"Moonshot ({MOONSHOT_DATA.get('model', '?')})"
+    if provider == "qwen":
+        return f"Qwen ({QWEN_DATA.get('model', '?')})"
+    # 默认：按模式自动选
+    if mode == "chat":
+        if OLLAMA_DATA.get("use"):
+            return f"Ollama ({OLLAMA_DATA.get('model', '?')})"
+        return f"Qwen ({QWEN_DATA.get('model', '?')})"
+    else:
+        if QWEN_DATA.get("use"):
+            return f"Qwen ({QWEN_DATA.get('model', '?')})"
+        return f"Ollama ({OLLAMA_DATA.get('model', '?')})"
+
+
 def generate_stream_response(
     messages: list[dict[str, str]],
     mode: str,
     session_id: str,
     file_path: Path | None = None,
+    knowledge_base_id: str | None = None,
+    model_provider: str | None = None,
 ):
     file_context = build_file_context(file_path)
     assistant_chunks: list[str] = []
+    status_log: list[str] = []
+
+    # 提取用户 query
+    user_query = messages[-1]["content"] if messages else ""
+    model_display = _resolve_model_display(mode, model_provider)
+    start_time = time.time()
+
+    logger.info("=" * 60)
+    logger.info("[对话开始] 模式: %s | 模型: %s", mode, model_display)
+    logger.info("[用户问题] %s", user_query[:200])
+    logger.info("=" * 60)
 
     save_conversation(session_id, messages, mode)
 
@@ -584,15 +677,43 @@ def generate_stream_response(
                 messages,
                 file_context=file_context,
                 file_path=str(file_path) if file_path else None,
+                model_provider=model_provider,
             ):
                 event_type = event.get("type", "content")
                 content = event.get("content", "")
+                if event_type == "status" and content:
+                    status_log.append(content)
+                    logger.info("[思考过程] %s", content)
+                if event_type == "content" and content:
+                    assistant_chunks.append(content)
+                yield sse_event(content, event_type=event_type)
+        elif mode == "rag":
+            if not knowledge_base_id:
+                yield sse_event("请先选择一个知识库", event_type="status")
+                yield sse_event("", done=True)
+                return
+            for event in iter_rag_events(messages, knowledge_base_id, model_provider=model_provider):
+                event_type = event.get("type", "content")
+                content = event.get("content", "")
+                if event_type == "status" and content:
+                    status_log.append(content)
+                    logger.info("[思考过程] %s", content)
+                if event_type == "content" and content:
+                    assistant_chunks.append(content)
+                yield sse_event(content, event_type=event_type)
+        elif mode == "swarm":
+            for event in iter_swarm_events(messages):
+                event_type = event.get("type", "content")
+                content = event.get("content", "")
+                if event_type == "status" and content:
+                    status_log.append(content)
+                    logger.info("[思考过程] %s", content)
                 if event_type == "content" and content:
                     assistant_chunks.append(content)
                 yield sse_event(content, event_type=event_type)
         else:
-            logger.info("Starting streaming response")
-            for chunk in iter_base_model_chunks(messages, mode="chat", file_context=file_context):
+            logger.info("[思考过程] 直接调用基础模型流式生成")
+            for chunk in iter_base_model_chunks(messages, mode="chat", file_context=file_context, provider=model_provider):
                 assistant_chunks.append(chunk)
                 yield sse_event(chunk)
 
@@ -601,10 +722,18 @@ def generate_stream_response(
             messages.append({"role": "assistant", "content": assistant_message})
             save_conversation(session_id, messages, mode)
 
+        elapsed = time.time() - start_time
+        answer_preview = assistant_message[:200] if assistant_message else "(空)"
+        logger.info("[回答内容] %s%s", answer_preview, "..." if len(assistant_message) > 200 else "")
+        logger.info("[对话结束] 总用时: %.2fs | 回答长度: %d字符", elapsed, len(assistant_message))
+        logger.info("=" * 60)
+
         yield sse_event("", done=True)
-        logger.info("Streaming response completed")
     except Exception as exc:
-        logger.error("Streaming response failed: %s", exc)
+        elapsed = time.time() - start_time
+        logger.error("[错误] %s", exc)
+        logger.info("[对话结束] 总用时: %.2fs | 状态: 异常", elapsed)
+        logger.info("=" * 60)
         error_message = f"\n\n**错误**: {exc}"
         messages.append({"role": "assistant", "content": error_message})
         save_conversation(session_id, messages, mode)
@@ -714,8 +843,13 @@ def chat_stream():
         if file_path is None:
             return jsonify({"success": False, "error": "文件引用无效或已过期"}), 400
 
+    knowledge_base_id = data.get("knowledge_base_id")
+    model_provider = data.get("model_provider")
+
     return Response(
-        stream_with_context(generate_stream_response(messages, mode, session_id, file_path)),
+        stream_with_context(
+            generate_stream_response(messages, mode, session_id, file_path, knowledge_base_id, model_provider)
+        ),
         mimetype="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -759,6 +893,125 @@ def manage_session_history(session_id: str):
         return jsonify({"success": False, "error": str(exc)})
 
 
+# ======================== 知识库管理 API ========================
+
+
+@app.route("/rag/knowledge-base", methods=["GET", "POST"])
+def knowledge_base_list():
+    if request.method == "GET":
+        return jsonify({"success": True, "knowledge_bases": kb_manager.list_all()})
+
+    # POST: 创建知识库
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "知识库名称不能为空"}), 400
+
+    description = data.get("description", "")
+    kb_id = kb_manager.create(name, description)
+    return jsonify({"success": True, "kb_id": kb_id, "message": f"知识库 '{name}' 创建成功"})
+
+
+@app.route("/rag/knowledge-base/<kb_id>", methods=["GET", "PUT", "DELETE"])
+def knowledge_base_detail(kb_id: str):
+    if request.method == "GET":
+        kb = kb_manager.get(kb_id)
+        if kb is None:
+            return jsonify({"success": False, "error": "知识库不存在"}), 404
+        return jsonify({"success": True, "knowledge_base": kb})
+
+    if request.method == "PUT":
+        data = request.get_json(silent=True) or {}
+        ok = kb_manager.update(
+            kb_id,
+            name=data.get("name"),
+            description=data.get("description"),
+        )
+        if not ok:
+            return jsonify({"success": False, "error": "知识库不存在"}), 404
+        return jsonify({"success": True, "message": "知识库已更新"})
+
+    # DELETE
+    if not kb_manager.delete(kb_id):
+        return jsonify({"success": False, "error": "知识库不存在"}), 404
+    return jsonify({"success": True, "message": "知识库已删除"})
+
+
+@app.route("/rag/knowledge-base/<kb_id>/documents", methods=["POST"])
+def upload_kb_document(kb_id: str):
+    if kb_manager.get(kb_id) is None:
+        return jsonify({"success": False, "error": "知识库不存在"}), 404
+
+    file_storage, error_response = validate_upload_request("document")
+    if error_response:
+        return error_response
+
+    try:
+        # 先保存到临时上传目录
+        file_path = save_uploaded_file(file_storage)
+        original_name = file_storage.filename or file_path.name
+
+        # 校验扩展名
+        ext = Path(original_name).suffix.lower().lstrip(".")
+        allowed = RAG_CONFIG.get("allowed_extensions", {"pdf", "md", "txt"})
+        if ext not in allowed:
+            file_path.unlink(missing_ok=True)
+            return jsonify({"success": False, "error": f"不支持的文档类型: .{ext}，仅支持 {', '.join(allowed)}"}), 400
+
+        # 添加到知识库
+        doc_id = kb_manager.add_document(kb_id, str(file_path), original_name)
+        # 清理临时文件
+        file_path.unlink(missing_ok=True)
+
+        if doc_id is None:
+            return jsonify({"success": False, "error": "文档添加失败"}), 500
+
+        return jsonify({
+            "success": True,
+            "doc_id": doc_id,
+            "filename": original_name,
+            "message": "文档上传成功，请构建索引后使用",
+        })
+    except Exception as exc:
+        logger.error("KB document upload failed: %s", exc)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@app.route("/rag/knowledge-base/<kb_id>/documents/<doc_id>", methods=["DELETE"])
+def delete_kb_document(kb_id: str, doc_id: str):
+    if not kb_manager.remove_document(kb_id, doc_id):
+        return jsonify({"success": False, "error": "文档不存在"}), 404
+    return jsonify({"success": True, "message": "文档已删除，请重新构建索引"})
+
+
+@app.route("/rag/knowledge-base/<kb_id>/index", methods=["POST"])
+def build_kb_index(kb_id: str):
+    if kb_manager.get(kb_id) is None:
+        return jsonify({"success": False, "error": "知识库不存在"}), 404
+
+    kb_manager.build_index_async(kb_id)
+    return jsonify({"success": True, "message": "索引构建已启动"})
+
+
+@app.route("/rag/knowledge-base/<kb_id>/index-status", methods=["GET"])
+def kb_index_status(kb_id: str):
+    status = kb_manager.get_index_status(kb_id)
+    return jsonify({"success": True, **status})
+
+
+@app.route("/models", methods=["GET"])
+def list_models():
+    """返回可用模型列表供前端选择。"""
+    models = []
+    if QWEN_DATA.get("use"):
+        models.append({"id": "qwen", "name": f"Qwen ({QWEN_DATA.get('model', '')})", "provider": "qwen"})
+    if OLLAMA_DATA.get("use"):
+        models.append({"id": "ollama", "name": f"Ollama ({OLLAMA_DATA.get('model', '')})", "provider": "ollama"})
+    if MOONSHOT_DATA.get("use"):
+        models.append({"id": "moonshot", "name": f"Moonshot ({MOONSHOT_DATA.get('model', '')})", "provider": "moonshot"})
+    return jsonify({"success": True, "models": models})
+
+
 @app.route("/health", methods=["GET"])
 def health_check():
     return jsonify(
@@ -767,7 +1020,7 @@ def health_check():
             "timestamp": datetime.now().isoformat(),
             "redis": "connected" if redis_client else "disconnected",
             "ollama": OLLAMA_DATA.get("use", False),
-            "chatgpt": CHATGPT_DATA.get("use", False),
+            "chatgpt": QWEN_DATA.get("use", False),
         }
     )
 
@@ -779,9 +1032,9 @@ if __name__ == "__main__":
 
     if OLLAMA_DATA.get("use"):
         print(f"Ollama enabled: {OLLAMA_DATA.get('model')}")
-    if CHATGPT_DATA.get("use"):
-        print(f"ChatGPT compatible model enabled: {CHATGPT_DATA.get('model')}")
-    if not OLLAMA_DATA.get("use") and not CHATGPT_DATA.get("use"):
+    if QWEN_DATA.get("use"):
+        print(f"ChatGPT compatible model enabled: {QWEN_DATA.get('model')}")
+    if not OLLAMA_DATA.get("use") and not QWEN_DATA.get("use"):
         print("Warning: no model is enabled in config/config.py")
 
     if redis_client:

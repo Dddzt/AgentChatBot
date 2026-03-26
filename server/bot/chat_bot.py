@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from langchain_openai import ChatOpenAI
 
-from config.config import CHATGPT_DATA, REDIS_DATA, OLLAMA_DATA, MOONSHOT_DATA, BAICHUAN_DATA
+from config.config import QWEN_DATA, REDIS_DATA, OLLAMA_DATA, MOONSHOT_DATA, BAICHUAN_DATA
 from config.templates.data.bot import MAX_HISTORY_SIZE, MAX_HISTORY_LENGTH, BOT_DATA, CHATBOT_PROMPT_DATA
 from server.client.loadmodel.Ollama.OllamaClient import OllamaClient
 from server.client.online.BaiChuanClient import BaiChuanClient
@@ -59,12 +59,12 @@ class ChatBot:
         elif BAICHUAN_DATA.get("use") and BAICHUAN_DATA.get("key") is not None:
             logging.info(f"使用百川模型生成回复: {BAICHUAN_DATA.get('model')}")
             return BaiChuanClient()  # 使用百川模型
-        elif CHATGPT_DATA.get("use") and CHATGPT_DATA.get("key") is not None:
-            logging.info(f"使用OpenAI模型生成回复: {CHATGPT_DATA.get('model')}")
+        elif QWEN_DATA.get("use") and QWEN_DATA.get("key") is not None:
+            logging.info(f"使用OpenAI模型生成回复: {QWEN_DATA.get('model')}")
             return ChatOpenAI(
-                api_key=CHATGPT_DATA.get("key"),
-                base_url=CHATGPT_DATA.get("url"),
-                model=CHATGPT_DATA.get("model")
+                api_key=QWEN_DATA.get("key"),
+                base_url=QWEN_DATA.get("url"),
+                model=QWEN_DATA.get("model")
             )
 
     def format_history(self):

@@ -2,8 +2,6 @@ import os
 import logging
 from importlib.util import spec_from_file_location, module_from_spec
 
-from tools.agent_tool.code_gen.tool import code_gen
-
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s][%(levelname)s]: %(message)s',
@@ -24,9 +22,15 @@ class ToolLoader:
         self.tools = []  # 存储已加载的工具函数
         self.tool_data = {}  # 存储工具描述信息
 
+    # 已移除的工具（让大模型自身能力处理）
+    SKIP_TOOLS = {"code_gen"}
+
     def load_tools(self):
         """遍历工具目录并加载每个工具模块"""
         for folder_name in os.listdir(self.tools_directory):
+            if folder_name in self.SKIP_TOOLS:
+                logging.info(f"跳过工具: {folder_name}（由大模型自身能力处理）")
+                continue
             folder_path = os.path.join(self.tools_directory, folder_name)
 
             if os.path.isdir(folder_path):

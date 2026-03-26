@@ -5,12 +5,13 @@ load_dotenv()
 
 #########################################  离线/本地的大模型信息  #########################################
 
-CHATGPT_DATA = {
+QWEN_DATA = {
     'use': True,
     'model': 'qwen-plus',  
     'key': os.getenv('QWEN_API_KEY', ''),
     'url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     'temperature': 0.7,
+    'embedding_model': 'text-embedding-v3',
     'vision_model': 'qwen-vl-plus',
     'timeout': 120,
     'stream_flush_chars': 24,
@@ -23,6 +24,7 @@ OLLAMA_DATA = {
     # 'code_model': 'qwen:1.8b',
     'model': 'qwen3:14b',  # ollama运行的模型名称
     'code_model': 'qwen3:14b',
+    'embedding_model': 'bge-m3',
     'key': 'EMPTY',
     'url': 'http://localhost:11434/api/chat',  # 本地 Ollama 服务地址
     'api_url': "http://localhost:11434/v1/",
@@ -31,10 +33,10 @@ OLLAMA_DATA = {
 }
 
 MOONSHOT_DATA = {
-    'use': False,
-    'key': "",
+    'use': True,
+    'key': os.getenv('MOONSHOT_API_KEY', ''),
     'url': "https://api.moonshot.cn/v1",
-    'model': "moonshot-v1-8k",
+    'model': "kimi-k2.5",
     "prompt": ""
 }
 
@@ -120,4 +122,14 @@ SEARCH_TOOL_CONFIG = {
         'max_results': 3,
         'time': 'd',  # d=day, w=week, m=month
     }
+}
+
+#########################################  RAG 知识库配置  #########################################
+
+RAG_CONFIG = {
+    'knowledge_base_path': 'data/knowledge_bases',
+    'max_token_len': 600,
+    'cover_content': 150,
+    'default_k': 3,
+    'allowed_extensions': {'pdf', 'md', 'txt'},
 }

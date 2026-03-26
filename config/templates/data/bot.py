@@ -18,6 +18,24 @@ BOT_DATA = {
         },
         "language_support": ["中文", "英文"],
     },
+    "rag": {
+        "name": "小D",
+        "capabilities": "知识库问答、文档检索、基于上下文的精准回答",
+        "default_responses": {
+            "unknown_command": "当前知识库里暂时没找到足够相关的内容来回答这个问题，你可以试试换个问法，或者补充更多文档到知识库。",
+            "welcome_message": "嗨，我是知识库助手小D。选好知识库、丢出问题，我帮你从文档里精准捞答案。",
+        },
+        "language_support": ["中文", "英文"],
+    },
+    "swarm": {
+        "name": "小D",
+        "capabilities": "多智能体协作、任务分诊、代码生成、联网搜索、知识问答，自动路由到最合适的专家智能体",
+        "default_responses": {
+            "unknown_command": "目前的智能体网络还不太擅长处理这类任务，你可以换个角度描述需求，我重新帮你分诊路由。",
+            "welcome_message": "嗨，我是协作体小D。我会根据你的问题自动分诊，把任务交给最合适的专家智能体来处理。",
+        },
+        "language_support": ["中文", "英文"],
+    },
 }
 
 

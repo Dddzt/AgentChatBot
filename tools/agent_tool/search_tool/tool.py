@@ -1,5 +1,5 @@
 import logging
-from langchain.agents import tool
+from langchain_core.tools import tool
 from langchain_community.tools import DuckDuckGoSearchResults
 from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
 from pydantic import BaseModel

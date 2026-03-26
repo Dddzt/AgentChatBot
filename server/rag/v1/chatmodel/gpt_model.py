@@ -1,4 +1,4 @@
-from config.config import CHATGPT_DATA
+from config.config import QWEN_DATA
 from config.templates.data.bot import RAG_PROMPT_TEMPLATE
 from openai import OpenAI
 
@@ -13,8 +13,8 @@ class ChatGPTModel:
         初始化 gpt 模型客户端。
         """
         self.client = OpenAI(
-            api_key=CHATGPT_DATA.get("key"),
-            base_url=CHATGPT_DATA.get("url")
+            api_key=QWEN_DATA.get("key"),
+            base_url=QWEN_DATA.get("url")
         )
 
     def chat(self, prompt: str, history=None, content: str = '') -> str:
@@ -30,7 +30,7 @@ class ChatGPTModel:
         full_prompt = RAG_PROMPT_TEMPLATE.get('prompt_template').format(question=prompt, history=history, context=content)
 
         response = self.client.chat.completions.create(
-            model=CHATGPT_DATA.get("model"),
+            model=QWEN_DATA.get("model"),
             messages=[
                 {"role": "user", "content": full_prompt}
             ]

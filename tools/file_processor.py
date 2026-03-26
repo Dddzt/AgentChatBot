@@ -35,12 +35,12 @@ class FileProcessor:
         
         # 加载配置
         try:
-            from config.config import CHATGPT_DATA
-            self.api_key = CHATGPT_DATA.get('key')
-            self.api_url = CHATGPT_DATA.get('url')
-            self.model = CHATGPT_DATA.get('model', 'qwen-plus')
+            from config.config import QWEN_DATA
+            self.api_key = QWEN_DATA.get('key')
+            self.api_url = QWEN_DATA.get('url')
+            self.model = QWEN_DATA.get('model', 'qwen-plus')
             # 视觉模型配置（从配置文件读取，默认qwen-vl-plus）
-            self.vision_model = CHATGPT_DATA.get('vision_model', 'qwen-vl-plus')
+            self.vision_model = QWEN_DATA.get('vision_model', 'qwen-vl-plus')
         except:
             self.api_key = None
             self.api_url = None

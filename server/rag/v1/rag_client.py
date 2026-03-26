@@ -26,7 +26,7 @@ def run_rag(question: str, knowledge_base_path: str, k: int = 1) -> str:
     vector.print_info()
 
     # 在数据库中检索最相关的文档片段
-    content = vector.query(question, EmbeddingModel=embedding, k=k)[0]
+    content = vector.query(question, EmbeddingModel=embedding, k=k)[0]["document"]
 
     # 使用大模型进行回复
     chat = OllamaModel()
@@ -35,6 +35,6 @@ def run_rag(question: str, knowledge_base_path: str, k: int = 1) -> str:
     return answer
 
 
-result = run_rag('AgentChatBot是一个什么类型的项目', knowledge_base_path='file')
-
-print("回答内容:" + result)
+if __name__ == "__main__":
+    result = run_rag('AgentChatBot是一个什么类型的项目', knowledge_base_path='file')
+    print("回答内容:" + result)

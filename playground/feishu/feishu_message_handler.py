@@ -41,7 +41,7 @@ _FILE_TYPE_DIR_MAP = {
 class FeishuMessageHandler:
     def __init__(self, feishu_user):
         self.feishu_user = feishu_user
-        self.model: BaseModelClient = create_model_client()
+        self.model: BaseModelClient = create_model_client(mode="feishu")
         self.processed_messages: set[str] = set()
         self.send_message_tool = SendMessage()
 
