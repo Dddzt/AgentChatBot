@@ -26,5 +26,9 @@ __pycache__/
 uploads/
 downloads/
 
+# 旧资源与文档（已清理）
+images/
+设计文档/
+
 # 知识库向量数据（体积大，按需重建）
 data/knowledge_bases/*/storage/vectors.npy
