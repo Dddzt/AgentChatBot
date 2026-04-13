@@ -3,6 +3,12 @@ __pycache__/
 *.pyc
 *.pyo
 
+# 虚拟环境
+venv/
+
+# macOS
+.DS_Store
+
 # 环境变量（含敏感 Key）
 .env
 

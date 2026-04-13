@@ -18,16 +18,34 @@ QWEN_DATA = {
     'stream_flush_interval': 0.12,
 }
 
+# OLLAMA_DATA = {
+#     'use': True,  
+#     # 'model': 'qwen:1.8b',  # ollama运行的模型名称
+#     # 'code_model': 'qwen:1.8b',
+#     # 'model': 'qwen3:14b',  # ollama运行的模型名称
+#     # 'code_model': 'qwen3:14b',
+
+#     'model': 'qwen2.5-32b-awq',
+#     'code_model': 'qwen2.5-32b-awq',
+#     'embedding_model': 'bge-m3',
+#     'key': 'EMPTY',
+#     # 'url': 'http://localhost:11434/api/chat',  # 本地 Ollama 服务地址
+#     # 'api_url': "http://localhost:11434/v1/",
+#     'url': 'http://u950935-bdd8-eeea0541.bjb2.seetacloud.com:6006/v1/',
+#     'api_url': "http://u950935-bdd8-eeea0541.bjb2.seetacloud.com:6006/v1/",
+#     'stream_flush_chars': 24,
+#     'stream_flush_interval': 0.12,
+# }
+
 OLLAMA_DATA = {
-    'use': True,  
-    # 'model': 'qwen:1.8b',  # ollama运行的模型名称
-    # 'code_model': 'qwen:1.8b',
-    'model': 'qwen3:14b',  # ollama运行的模型名称
-    'code_model': 'qwen3:14b',
+    'use': True,
+    'model': 'qwen2.5-32b-awq',
+    'code_model': 'qwen2.5-32b-awq',
     'embedding_model': 'bge-m3',
     'key': 'EMPTY',
-    'url': 'http://localhost:11434/api/chat',  # 本地 Ollama 服务地址
-    'api_url': "http://localhost:11434/v1/",
+    # 地址已经正确，保持不变
+    'url': 'https://u950935-afee-4765a824.bjb1.seetacloud.com:8443/v1/',
+    'api_url': 'https://u950935-afee-4765a824.bjb1.seetacloud.com:8443/v1/',
     'stream_flush_chars': 24,
     'stream_flush_interval': 0.12,
 }

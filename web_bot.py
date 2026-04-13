@@ -23,6 +23,7 @@ from werkzeug.utils import secure_filename
 from config.config import QWEN_DATA, FILE_CONFIG, MOONSHOT_DATA, OLLAMA_DATA, RAG_CONFIG, REDIS_DATA, UPLOAD_FOLDER
 from config.templates.data.bot import AGENT_BOT_PROMPT_DATA, BOT_DATA, CHATBOT_PROMPT_DATA
 from server.client.model_factory import create_model_client
+from server.memory import ConversationMemory
 from server.rag.knowledge_base_manager import KnowledgeBaseManager
 from tools.file_processor import file_processor
 
@@ -134,14 +135,9 @@ def sanitize_messages(messages: object) -> list[dict[str, str]]:
 
 
 def build_history_text(messages: list[dict[str, str]]) -> str:
-    recent_messages = messages[-3:] if len(messages) > 3 else messages
-    history_parts: list[str] = []
-
-    for message in recent_messages[:-1]:
-        role_name = "用户" if message["role"] == "user" else "助手"
-        history_parts.append(f"{role_name}: {message['content']}")
-
-    return "\n\n".join(history_parts)
+    """将消息列表（不含最后一条当前问题）转为纯文本历史，供 RAG 嵌入。"""
+    memory = ConversationMemory.from_messages(messages[:-1] if messages else [])
+    return memory.to_text(max_turns=5)
 
 
 def build_current_query(messages: list[dict[str, str]], file_context: str | None = None) -> str:
@@ -151,14 +147,8 @@ def build_current_query(messages: list[dict[str, str]], file_context: str | None
     return current_query
 
 
-def build_model_messages(
-    messages: list[dict[str, str]],
-    mode: str = "chat",
-    file_context: str | None = None,
-) -> list[dict[str, str]]:
-    history_text = build_history_text(messages)
-    current_query = build_current_query(messages, file_context)
-
+def _build_system_prompt(mode: str = "chat") -> str:
+    """根据模式构建 system prompt（不含历史和当前问题）。"""
     bot_key = "agent" if mode == "agent" else "chat"
     bot_config = BOT_DATA[bot_key]
     prompt_data = AGENT_BOT_PROMPT_DATA if mode == "agent" else CHATBOT_PROMPT_DATA
@@ -169,8 +159,6 @@ def build_model_messages(
         "welcome_message": bot_config.get("default_responses", {}).get("welcome_message"),
         "unknown_command": bot_config.get("default_responses", {}).get("unknown_command"),
         "language_support": bot_config.get("language_support"),
-        "history": history_text if history_text else "无历史记录",
-        "query": current_query,
     }
 
     if mode == "agent":
@@ -182,11 +170,32 @@ def build_model_messages(
             }
         )
 
-    system_prompt = prompt_data.get("description").format(**prompt_kwargs)
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": current_query},
-    ]
+    return prompt_data.get("description").format(**prompt_kwargs)
+
+
+def build_model_messages(
+    messages: list[dict[str, str]],
+    mode: str = "chat",
+    file_context: str | None = None,
+) -> list[dict[str, str]]:
+    """构建发送给 LLM 的消息列表，保留完整 user/assistant 交替历史。"""
+    system_prompt = _build_system_prompt(mode)
+
+    # 使用 ConversationMemory 做滑动窗口截断
+    memory = ConversationMemory.from_messages(messages)
+    history = memory.to_messages()
+
+    # 组装：system + 历史消息（含当前 query）
+    result: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+
+    for i, msg in enumerate(history):
+        # 如果有文件上下文，附加到最后一条 user 消息
+        if i == len(history) - 1 and file_context and msg["role"] == "user":
+            result.append({"role": "user", "content": f"{file_context}\n\n用户问题: {msg['content']}"})
+        else:
+            result.append({"role": msg["role"], "content": msg["content"]})
+
+    return result
 
 
 def chunk_text(text: str, chunk_size: int = PSEUDO_STREAM_CHUNK_SIZE) -> Iterable[str]:
@@ -314,6 +323,8 @@ async def run_agentbot(
     model_provider: str | None = None,
 ) -> str:
     current_query = build_current_query(messages, file_context)
+    # 提取对话历史（不含当前 query）
+    history = [m for m in messages[:-1] if m.get("role") in ("user", "assistant")]
 
     try:
         from server.bot.agent_bot import AgentBot
@@ -338,6 +349,7 @@ async def run_agentbot(
             if file_path and Path(file_path).suffix.lower() not in IMAGE_EXTENSIONS
             else None,
             user_id="web_user",
+            history=history,
         )
     except Exception as exc:
         logger.warning("AgentBot runtime failed, fallback to base mode: %s", exc)
@@ -351,6 +363,8 @@ def iter_agentbot_events(
     model_provider: str | None = None,
 ) -> Iterable[dict[str, str]]:
     current_query = build_current_query(messages, file_context)
+    # 提取对话历史（不含当前 query）
+    history = [m for m in messages[:-1] if m.get("role") in ("user", "assistant")]
     yield {"type": "status", "content": "已收到请求，正在准备智能体..."}
 
     try:
@@ -379,6 +393,7 @@ def iter_agentbot_events(
             if file_path and Path(file_path).suffix.lower() not in IMAGE_EXTENSIONS
             else None,
             user_id="web_user",
+            history=history,
         )
         yield from iter_async_generator(stream)
     except Exception as exc:
@@ -427,27 +442,57 @@ def iter_rag_events(
         yield {"type": "content", "content": f"知识库问答出错: {exc}"}
 
 
+_multi_agent_cache: dict[str, "MultiAgentBot"] = {}
+
+
+def _get_or_create_multi_agent_bot(provider: str | None = None):
+    """缓存 MultiAgentBot 实例（多智能体模式始终走差异化配模，不受 provider 影响）。"""
+    from server.bot.multi_agent.bot import MultiAgentBot
+
+    if "_default" not in _multi_agent_cache:
+        _multi_agent_cache["_default"] = MultiAgentBot()
+    return _multi_agent_cache["_default"]
+
+
 def iter_swarm_events(
     messages: list[dict[str, str]],
+    file_context: str | None = None,
+    model_provider: str | None = None,
 ) -> Iterable[dict[str, str]]:
-    """Swarm 模式的流式事件生成器。"""
+    """多智能体协作模式的流式事件生成器（基于 LangGraph Supervisor-Worker 架构）。"""
+    import asyncio
+
     try:
-        from server.bot.web_swarm_bot import WebSwarmBot
+        from server.bot.multi_agent.bot import MultiAgentBot
     except ImportError as exc:
-        logger.warning("WebSwarmBot dependencies missing: %s", exc)
-        yield {"type": "status", "content": "协作体模块依赖缺失，无法使用。"}
+        logger.warning("MultiAgentBot dependencies missing: %s", exc)
+        yield {"type": "status", "content": "多智能体模块依赖缺失，无法使用。"}
         return
 
     try:
-        # 构建 Swarm 需要的消息格式
         current_query = messages[-1]["content"] if messages else ""
-        swarm_messages = [{"role": "user", "content": current_query}]
+        if file_context:
+            current_query = f"{file_context}\n\n用户问题: {current_query}"
+        # 传递对话历史（排除最后一条当前 query）
+        history = [m for m in messages[:-1] if m.get("role") in ("user", "assistant")]
 
-        swarm_bot = WebSwarmBot()
-        yield from swarm_bot.iter_events(swarm_messages)
+        bot = _get_or_create_multi_agent_bot(model_provider)
+
+        # 在同步上下文中运行异步生成器
+        loop = asyncio.new_event_loop()
+        try:
+            agen = bot.astream(current_query, history)
+            while True:
+                try:
+                    event = loop.run_until_complete(agen.__anext__())
+                    yield event
+                except StopAsyncIteration:
+                    break
+        finally:
+            loop.close()
     except Exception as exc:
-        logger.error("Swarm streaming failed: %s", exc)
-        yield {"type": "content", "content": f"智能体协作出错: {exc}"}
+        logger.error("MultiAgent streaming failed: %s", exc)
+        yield {"type": "content", "content": f"多智能体协作出错: {exc}"}
 
 
 def make_client_file_path(file_path: Path) -> str:
@@ -702,7 +747,7 @@ def generate_stream_response(
                     assistant_chunks.append(content)
                 yield sse_event(content, event_type=event_type)
         elif mode == "swarm":
-            for event in iter_swarm_events(messages):
+            for event in iter_swarm_events(messages, file_context=file_context, model_provider=model_provider):
                 event_type = event.get("type", "content")
                 content = event.get("content", "")
                 if event_type == "status" and content:
@@ -710,7 +755,8 @@ def generate_stream_response(
                     logger.info("[思考过程] %s", content)
                 if event_type == "content" and content:
                     assistant_chunks.append(content)
-                yield sse_event(content, event_type=event_type)
+                # 直接序列化完整事件（保留 model 等额外字段）
+                yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
         else:
             logger.info("[思考过程] 直接调用基础模型流式生成")
             for chunk in iter_base_model_chunks(messages, mode="chat", file_context=file_context, provider=model_provider):

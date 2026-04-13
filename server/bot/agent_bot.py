@@ -1,18 +1,17 @@
 import traceback
 import logging
-import json
 import asyncio
 import os
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
-import redis
-from config.config import QWEN_DATA, REDIS_DATA
-from config.templates.data.bot import MAX_HISTORY_SIZE, MAX_HISTORY_LENGTH, AGENT_BOT_PROMPT_DATA, BOT_DATA
+from config.config import QWEN_DATA
+from config.templates.data.bot import AGENT_BOT_PROMPT_DATA, BOT_DATA
+from server.memory import ConversationMemory
 from tools.tool_loader import ToolLoader
 
 # 初始化工具加载器
@@ -29,19 +28,6 @@ logging.basicConfig(level=logging.INFO,
 os.environ["OPENAI_API_KEY"] = QWEN_DATA.get("key")
 os.environ["OPENAI_API_BASE"] = QWEN_DATA.get("url")
 
-# Redis 连接池
-def get_redis_client():
-    try:
-        redis_pool = redis.ConnectionPool(host=REDIS_DATA.get("host"), port=REDIS_DATA.get("port"), db=REDIS_DATA.get("db"))
-        client = redis.StrictRedis(connection_pool=redis_pool)
-        client.ping()
-        return client
-    except redis.RedisError as e:
-        logging.warning(f"Redis连接失败，将不使用历史记录功能: {e}")
-        return None
-
-redis_client = get_redis_client()
-
 # 存储会话中的图像路径
 user_image_map = {}
 
@@ -57,12 +43,10 @@ class AgentBot:
         self.query = query
         self.user_name = user_name
         self.user_id = user_id
-        self.redis_key_prefix = "chat_history:"
-        self.history = []
 
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 构建系统提示词
+        # 构建系统提示词（不含历史和当前问题）
         self.system_prompt = AGENT_BOT_PROMPT_DATA.get("description").format(
             name=BOT_DATA["agent"].get("name"),
             capabilities=BOT_DATA["agent"].get("capabilities"),
@@ -70,8 +54,6 @@ class AgentBot:
             unknown_command=BOT_DATA["agent"].get("default_responses").get("unknown_command"),
             language_support=BOT_DATA["agent"].get("language_support"),
             current_time=current_time,
-            history=self.format_history(),
-            query=self.query,
             user_name=self.user_name,
             user_id=self.user_id,
         )
@@ -112,8 +94,6 @@ class AgentBot:
                 "key": MOONSHOT_DATA.get("key"),
                 "url": MOONSHOT_DATA.get("url"),
             }
-            # kimi-k2.5 / kimi-k2.5-thinking 的 thinking 模式与 langgraph 工具调用不兼容，
-            # 需要禁用 thinking 并使用其允许的 temperature=0.6
             if model_name in ("kimi-k2.5", "kimi-k2.5-thinking"):
                 cfg["temperature"] = 0.6
                 cfg["model_kwargs"] = {
@@ -142,14 +122,26 @@ class AgentBot:
         }
         return status_map.get(tool_name, f"正在调用工具 {tool_name} ...")
 
-    def _build_combined_input(self, query, image_path, file_path, user_id, history):
-        return (
-            f"{query}\n"
-            f"用户id:{user_id}\n"
-            f"图像路径: {image_path}\n"
-            f"文件路径:{file_path}\n"
-            f"历史记录:\n {history}"
-        )
+    def _build_messages(self, query, image_path, file_path, history=None):
+        """构建标准消息列表，包含对话历史。"""
+        messages = []
+
+        # 添加对话历史
+        if history:
+            memory = ConversationMemory.from_messages(history)
+            for msg in memory.to_messages():
+                messages.append((msg["role"], msg["content"]))
+
+        # 构建当前用户输入
+        parts = [query]
+        if image_path:
+            parts.append(f"图像路径: {image_path}")
+        if file_path:
+            parts.append(f"文件路径: {file_path}")
+        current_input = "\n".join(parts)
+
+        messages.append(("user", current_input))
+        return messages
 
     async def astream(
         self,
@@ -158,13 +150,10 @@ class AgentBot:
         image_path,
         file_path,
         user_id,
+        history=None,
     ) -> AsyncIterator[dict[str, str]]:
         try:
-            self.manage_history()
-            self.history.append({"Human": query})
-
-            history = self.format_history()
-            combined_input = self._build_combined_input(query, image_path, file_path, user_id, history)
+            messages = self._build_messages(query, image_path, file_path, history)
 
             yield {"type": "status", "content": "正在分析你的问题，并规划处理步骤..."}
 
@@ -172,7 +161,7 @@ class AgentBot:
             active_tool = None
 
             async for event in self.agent.astream_events(
-                {"messages": [("user", combined_input)]},
+                {"messages": messages},
                 version="v2",
             ):
                 event_name = event.get("event", "")
@@ -207,79 +196,27 @@ class AgentBot:
                         yield {"type": "content", "content": chunk_text}
                     continue
 
-            self.save_history_to_redis(self.user_id, self.history)
         except Exception as e:
             logging.error(f"运行时发生错误: {e}")
             traceback.print_exc()
             yield {"type": "content", "content": f"发生错误: {e}"}
 
-    def format_history(self):
-        history = self.get_history_from_redis(self.user_id)
-        if not history:
-            return ""
-
-        formatted_history = []
-        for entry in history:
-            human_text = entry.get('Human', '')
-            formatted_history.append(f"Human: {human_text}\n")
-
-        return "\n".join(formatted_history)
-
-    def get_history_from_redis(self, user_id):
-        if redis_client is None:
-            return []
-        key = f"{self.redis_key_prefix}{user_id}"
+    async def run(self, user_name, query, image_path, file_path, user_id, history=None):
         try:
-            history = redis_client.get(key)
-            if history:
-                return json.loads(history)
-        except redis.RedisError as e:
-            logging.error(f"从Redis获取历史记录时出错: {e}")
-        return []
-
-    def save_history_to_redis(self, user_id, history):
-        if redis_client is None:
-            return
-        key = f"{self.redis_key_prefix}{user_id}"
-        try:
-            redis_client.set(key, json.dumps(history))
-        except redis.RedisError as e:
-            logging.error(f"保存历史记录到Redis时出错: {e}")
-
-    def manage_history(self):
-        self.history = self.get_history_from_redis(self.user_id)
-
-        while len(self.history) > MAX_HISTORY_SIZE:
-            self.history.pop(0)
-
-        history_str = json.dumps(self.history)
-        while len(history_str) > MAX_HISTORY_LENGTH:
-            if self.history:
-                self.history.pop(0)
-                history_str = json.dumps(self.history)
-            else:
-                break
-
-    async def run(self, user_name, query, image_path, file_path, user_id):
-        try:
-            self.manage_history()
-            self.history.append({"Human": query})
-            history = self.format_history()
-            combined_input = self._build_combined_input(query, image_path, file_path, user_id, history)
+            messages = self._build_messages(query, image_path, file_path, history)
 
             result = await self.agent.ainvoke(
-                {"messages": [("user", combined_input)]}
+                {"messages": messages}
             )
 
             # 提取最终的 AI 回复
-            messages = result.get("messages", [])
+            result_messages = result.get("messages", [])
             response = ""
-            for msg in reversed(messages):
+            for msg in reversed(result_messages):
                 if hasattr(msg, "content") and getattr(msg, "type", "") == "ai" and msg.content:
                     response = msg.content
                     break
 
-            self.save_history_to_redis(self.user_id, self.history)
             return response if response else "处理完成"
         except Exception as e:
             logging.error(f"运行时发生错误: {e}")

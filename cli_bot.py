@@ -25,17 +25,19 @@ async def main():
     print("-" * 40)
     
     use_agent = False
-    
+    # 在循环外创建 bot 实例，保持记忆跨轮次
+    chat_bot = ChatBot(user_id="cli_user", user_name="CLI用户")
+
     while True:
         try:
             # 获取用户输入
             user_input = input("\n您: ").strip()
-            
+
             # 退出命令
             if user_input.lower() in ['#退出', 'exit', 'quit']:
                 print("再见！")
                 break
-                
+
             # 模式切换命令
             if user_input == "#智能体":
                 use_agent = True
@@ -45,41 +47,22 @@ async def main():
                 use_agent = False
                 print("已切换到普通聊天模式")
                 continue
-            
+
             if not user_input:
                 continue
-                
+
             # 处理用户输入
             print("机器人正在思考...")
-            
+
             if use_agent:
-                # 使用智能体模式
-                if QWEN_DATA.get("use"):
-                    from server.bot.agent_bot import AgentBot
-                    agent_bot = AgentBot(query=user_input, user_id="cli_user", user_name="CLI用户")
-                    response = await agent_bot.run(
-                        user_name="CLI用户",
-                        query=user_input,
-                        image_path=None,
-                        file_path=None,
-                        user_id="cli_user"
-                    )
-                elif OLLAMA_DATA.get("use"):
-                    from server.bot.swarm_agent_bot import SwarmBot
-                    swarm_bot = SwarmBot(query=user_input, user_id="cli_user", user_name="CLI用户")
-                    response = await swarm_bot.run(
-                        user_name="CLI用户",
-                        query=user_input,
-                        image_path=None,
-                        file_path=None,
-                        user_id="cli_user"
-                    )
-                else:
-                    response = "请在config/config.py中启用QWEN_DATA或OLLAMA_DATA"
+                # 使用多智能体协作模式（Supervisor-Worker 架构）
+                from server.bot.multi_agent.bot import MultiAgentBot
+                provider = "ollama" if OLLAMA_DATA.get("use") else "qwen"
+                bot = MultiAgentBot(provider=provider)
+                response = await bot.run(query=user_input)
             else:
-                # 使用普通聊天模式
-                bot = ChatBot(user_id="cli_user", user_name="CLI用户")
-                response = await bot.run(
+                # 使用普通聊天模式（复用同一实例，记忆自动管理）
+                response = await chat_bot.run(
                     user_name="CLI用户",
                     query=user_input,
                     user_id="cli_user",

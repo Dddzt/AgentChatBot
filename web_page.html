@@ -1200,6 +1200,134 @@
         .swarm-node.triage .node-desc { color: rgba(255,255,255,0.7); }
         .swarm-arrow { color: var(--text-soft); font-size: 20px; }
 
+        /* ===== 多智能体工作流面板 ===== */
+        .ma-workflow { margin-bottom: 8px; }
+        .ma-card {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            margin-bottom: 8px;
+            overflow: hidden;
+            background: #fff;
+            transition: border-color 0.2s;
+        }
+        .ma-card.active { border-color: var(--brand); box-shadow: 0 0 0 2px rgba(91,99,243,0.10); }
+        .ma-card.done { border-color: var(--border); }
+        .ma-card-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 14px;
+            background: #f8fafc;
+            cursor: pointer;
+            user-select: none;
+            font-size: 13px;
+        }
+        .ma-card-head:hover { background: #f1f5f9; }
+        .ma-card-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: #cbd5e1;
+        }
+        .ma-card.active .ma-card-dot {
+            background: var(--brand);
+            animation: ma-pulse 1.5s ease-in-out infinite;
+        }
+        .ma-card.done .ma-card-dot { background: var(--success); }
+        @keyframes ma-pulse {
+            0%,100% { box-shadow: 0 0 0 2px rgba(91,99,243,0.18); }
+            50%     { box-shadow: 0 0 0 5px rgba(91,99,243,0.08); }
+        }
+        .ma-card-agent { font-weight: 600; color: var(--text); }
+        .ma-card-model {
+            padding: 1px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        .ma-m-qwen   { background: #dbeafe; color: #1d4ed8; }
+        .ma-m-kimi   { background: #ede9fe; color: #6d28d9; }
+        .ma-m-local  { background: #dcfce7; color: #15803d; }
+        .ma-card-time {
+            margin-left: auto;
+            font-size: 11px;
+            color: var(--text-soft);
+            font-variant-numeric: tabular-nums;
+        }
+        .ma-card-chevron {
+            font-size: 10px;
+            color: var(--text-soft);
+            transition: transform 0.15s;
+            margin-left: 4px;
+        }
+        .ma-card.collapsed .ma-card-chevron { transform: rotate(-90deg); }
+        .ma-card.collapsed .ma-card-body { display: none; }
+
+        .ma-card-body {
+            padding: 0 14px 10px;
+            font-size: 12px;
+            line-height: 1.6;
+        }
+        .ma-card-instruction {
+            padding: 6px 10px;
+            margin: 6px 0;
+            background: #f0f4ff;
+            border-left: 3px solid var(--brand);
+            border-radius: 0 6px 6px 0;
+            color: var(--text);
+            font-size: 12px;
+        }
+        .ma-card-tools {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin: 4px 0;
+        }
+        .ma-tool-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            padding: 2px 8px;
+            background: #f5f3ff;
+            color: var(--brand);
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+        .ma-card-output {
+            margin-top: 6px;
+            padding: 8px 10px;
+            background: #fafafa;
+            border: 1px solid #f0f0f0;
+            border-radius: 6px;
+            max-height: 220px;
+            overflow-y: auto;
+            font-size: 13px;
+            line-height: 1.6;
+            color: var(--text);
+        }
+        .ma-card-output:empty { display: none; }
+        .ma-card-output p { margin: 0 0 6px; }
+        .ma-card-output pre { margin: 4px 0; font-size: 12px; }
+        .ma-card-status {
+            padding: 6px 0;
+            color: var(--text-soft);
+            font-size: 12px;
+            font-style: italic;
+        }
+        .ma-final-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 0 4px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--success);
+            border-top: 1px solid var(--border);
+            margin-top: 4px;
+        }
+
         @media (max-width: 768px) {
             body {
                 flex-direction: column;
@@ -1326,23 +1454,32 @@
                     <div class="swarm-network-overview" id="swarmNetworkOverview">
                         <div class="swarm-network-graph">
                             <div class="swarm-node triage">
-                                分诊智能体
-                                <div class="node-desc">分析问题类型，自动路由</div>
+                                调度中心 (Supervisor)
+                                <div class="node-desc">分析任务 → 路由到专家 → 汇总结果</div>
                             </div>
                             <div class="swarm-arrow">↓</div>
                             <div class="swarm-node-row">
                                 <div class="swarm-node sub">
-                                    代码助手
-                                    <div class="node-desc">代码生成/调试/解释</div>
+                                    搜索专家
+                                    <div class="node-desc">联网搜索 / 信息整合</div>
                                 </div>
                                 <div class="swarm-node sub">
-                                    搜索助手
-                                    <div class="node-desc">联网搜索/信息整合</div>
+                                    代码专���
+                                    <div class="node-desc">代码生成 / 调试</div>
                                 </div>
                                 <div class="swarm-node sub">
-                                    知识问答助手
-                                    <div class="node-desc">通用问答/总结分析</div>
+                                    分析���家
+                                    <div class="node-desc">深度分析 / 逻辑推理</div>
                                 </div>
+                                <div class="swarm-node sub">
+                                    写作专家
+                                    <div class="node-desc">文档撰写 / 内容创作</div>
+                                </div>
+                            </div>
+                            <div class="swarm-arrow">��</div>
+                            <div class="swarm-node triage" style="background: linear-gradient(135deg, #1a5c3a, #2d8c5a);">
+                                最终回答
+                                <div class="node-desc">汇总各专家成果，生成完整回答</div>
                             </div>
                         </div>
                     </div>
@@ -1640,14 +1777,17 @@
             document.getElementById("welcomeSection").style.display = "none";
             const wrap = document.createElement("div");
             wrap.className = `message ${role}`;
-            wrap.innerHTML = role === "user"
-                ? '<div class="message-avatar"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div><div class="message-content"></div>'
-                : '<div class="message-avatar"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></div><div class="message-content"></div>';
-            const contentEl = wrap.querySelector(".message-content");
-            if (role === "assistant") {
-                renderMarkdown(contentEl, content);
+            if (role === "user") {
+                wrap.innerHTML = '<div class="message-avatar"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div><div class="message-content"></div>';
+                wrap.querySelector(".message-content").textContent = content;
             } else {
-                contentEl.textContent = content;
+                // assistant 消息：swarm 模式下分为 workflow + answer 两个区域
+                const isSwarm = currentMode === "swarm";
+                wrap.innerHTML = '<div class="message-avatar"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></div><div class="message-content">'
+                    + (isSwarm ? '<div class="ma-workflow"></div><div class="ma-final-label" style="display:none">&#x2705; 最终回答</div>' : '')
+                    + '<div class="message-answer"></div></div>';
+                const answerEl = wrap.querySelector(".message-answer");
+                if (content) renderMarkdown(answerEl, content);
             }
             document.getElementById("messagesList").appendChild(wrap);
             scrollBottom();
@@ -1806,8 +1946,12 @@
 
                 if (typing.isConnected) typing.remove();
 
+                resetFlowPanel();
                 const assistant = addMessage("assistant", "");
-                const contentEl = assistant.querySelector(".message-content");
+                // 渲染到 .message-answer 区域（不影响 .ma-workflow 区域）
+                const answerEl = assistant.querySelector(".message-answer") || assistant.querySelector(".message-content");
+                const workflowEl = assistant.querySelector(".ma-workflow") || null;
+                const finalLabel = assistant.querySelector(".ma-final-label") || null;
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let full = "";
@@ -1819,13 +1963,14 @@
                 const flushRender = (forceMarkdown = false) => {
                     renderPending = false;
                     if (full) {
+                        if (finalLabel) finalLabel.style.display = "";
                         if (forceMarkdown || doneFlag) {
-                            renderMarkdown(contentEl, full);
+                            renderMarkdown(answerEl, full);
                         } else {
-                            renderStreamingText(contentEl, full);
+                            renderStreamingText(answerEl, full);
                         }
                     } else if (latestStatus) {
-                        renderStreamingText(contentEl, latestStatus);
+                        renderStreamingText(answerEl, latestStatus);
                     }
                     scrollBottom();
                 };
@@ -1845,17 +1990,26 @@
                     if (eventType === "status") {
                         latestStatus = payload.content || latestStatus;
                         if (!full) scheduleRender(false);
-                    } else if (eventType === "agent_transfer") {
+                    } else if (eventType === "agent_active") {
                         updateSwarmAgent(payload.content);
-                        insertTransferIndicator(payload.content);
+                        addFlowStep(payload.content, payload.model);
+                    } else if (eventType === "supervisor_decision") {
+                        addDecisionToFlow(payload.content);
                     } else if (eventType === "tool_call") {
-                        insertToolCallBadge(payload.content);
-                    } else if (payload.content) {
+                        addToolCallToFlow(payload.content);
+                    } else if (eventType === "worker_stream") {
+                        appendWorkerStream(payload.node, payload.content);
+                    } else if (eventType === "worker_result") {
+                        addResultToFlow(payload.content);
+                    } else if (eventType === "trace") {
+                        updateFlowTimings(payload.content);
+                    } else if (eventType === "content" && payload.content) {
                         full += payload.content;
                         scheduleRender(false);
                     }
                     if (payload.done) {
                         doneFlag = true;
+                        finalizeFlow();
                         scheduleRender(true);
                     }
                 };
@@ -1873,9 +2027,10 @@
                 }
 
                 if (full) {
-                    renderMarkdown(contentEl, full);
+                    if (finalLabel) finalLabel.style.display = "";
+                    renderMarkdown(answerEl, full);
                 } else if (latestStatus) {
-                    renderStreamingText(contentEl, latestStatus);
+                    renderStreamingText(answerEl, latestStatus);
                 }
 
                 if (full) messages.push({ role: "assistant", content: full });
@@ -2129,6 +2284,221 @@
             badge.innerHTML = `<span class="swarm-tool-badge">🔧 ${esc(toolName)}()</span>`;
             document.getElementById("messagesList").appendChild(badge);
             scrollBottom();
+        }
+
+        // ======================== 多智能体工作流面板 ========================
+
+        let _maWorkflowEl = null;   // 当前工作流容器 (.ma-workflow)
+        let _maCards = [];          // [{el, agent, model, startTime}]
+        let _maStepStart = 0;
+
+        const AGENT_DISPLAY_MAP = {
+            "researcher": "搜索专家",
+            "coder": "代码专家",
+            "analyst": "分析专家",
+            "writer": "写作专家",
+            "FINISH": "完成",
+        };
+
+        function _mClass(m) {
+            if (!m) return "ma-m-local";
+            const l = m.toLowerCase();
+            if (l.includes("kimi") || l.includes("moonshot")) return "ma-m-kimi";
+            if (l.includes("qwen") && !l.includes("awq") && !l.includes("32b")) return "ma-m-qwen";
+            return "ma-m-local";
+        }
+        function _mLabel(m) {
+            if (!m) return "";
+            const l = m.toLowerCase();
+            if (l.includes("kimi")) return "Kimi K2.5";
+            if (l.includes("qwen-plus")) return "Qwen Plus";
+            if (l.includes("qwen") && (l.includes("awq") || l.includes("32b"))) return "Local";
+            return m;
+        }
+
+        function _getWorkflow() {
+            if (_maWorkflowEl) return _maWorkflowEl;
+            const all = document.querySelectorAll("#messagesList .message.assistant .ma-workflow");
+            _maWorkflowEl = all.length ? all[all.length - 1] : null;
+            return _maWorkflowEl;
+        }
+
+        function _lastCard() {
+            return _maCards.length ? _maCards[_maCards.length - 1] : null;
+        }
+
+        /* --- 核心：添加一个 Agent 卡片 --- */
+        function addFlowStep(agentName, modelName) {
+            const wf = _getWorkflow();
+            if (!wf) return;
+
+            // 结束上一张卡片
+            const prev = _lastCard();
+            if (prev) {
+                prev.el.classList.remove("active");
+                prev.el.classList.add("done");
+                const dur = ((Date.now() - _maStepStart) / 1000).toFixed(1);
+                const t = prev.el.querySelector(".ma-card-time");
+                if (t && !t.textContent) t.textContent = dur + "s";
+            }
+
+            const card = document.createElement("div");
+            card.className = "ma-card active";
+            const mc = _mClass(modelName);
+            const ml = _mLabel(modelName);
+            const modelTag = ml ? `<span class="ma-card-model ${mc}">${esc(ml)}</span>` : "";
+
+            card.innerHTML = `<div class="ma-card-head" onclick="this.parentElement.classList.toggle('collapsed')">
+  <span class="ma-card-dot"></span>
+  <span class="ma-card-agent">${esc(agentName)}</span>
+  ${modelTag}
+  <span class="ma-card-time"></span>
+  <span class="ma-card-chevron">&#x25BC;</span>
+</div>
+<div class="ma-card-body">
+  <div class="ma-card-status">&#x23f3; \u6b63\u5728\u5904\u7406\u2026</div>
+</div>`;
+
+            wf.appendChild(card);
+            _maCards.push({ el: card, agent: agentName, model: modelName, startTime: Date.now() });
+            _maStepStart = Date.now();
+            scrollBottom();
+        }
+
+        /* --- Supervisor 决策 → 显示任务指令 --- */
+        function addDecisionToFlow(raw) {
+            try {
+                const d = typeof raw === "string" ? JSON.parse(raw) : raw;
+                const c = _lastCard();
+                if (!c) return;
+                const body = c.el.querySelector(".ma-card-body");
+                if (!body) return;
+                const instruction = d.instruction || "";
+                if (instruction) {
+                    // 移除等待状态
+                    const status = body.querySelector(".ma-card-status");
+                    if (status) status.remove();
+                    const div = document.createElement("div");
+                    div.className = "ma-card-instruction";
+                    div.textContent = instruction;
+                    body.insertBefore(div, body.firstChild);
+                }
+            } catch (e) { console.warn("addDecisionToFlow", e); }
+        }
+
+        /* --- 工具调用 → 显示工具标签 --- */
+        function addToolCallToFlow(toolName) {
+            const c = _lastCard();
+            if (!c) return;
+            const body = c.el.querySelector(".ma-card-body");
+            if (!body) return;
+            let tools = body.querySelector(".ma-card-tools");
+            if (!tools) {
+                tools = document.createElement("div");
+                tools.className = "ma-card-tools";
+                body.appendChild(tools);
+            }
+            const tag = document.createElement("span");
+            tag.className = "ma-tool-tag";
+            tag.textContent = "\uD83D\uDD27 " + toolName + "()";
+            tools.appendChild(tag);
+            // 移除等待状态
+            const status = body.querySelector(".ma-card-status");
+            if (status) status.remove();
+        }
+
+        /* --- Worker 结果 → 显示完整输出（Markdown 渲染） --- */
+        function addResultToFlow(raw) {
+            try {
+                const d = typeof raw === "string" ? JSON.parse(raw) : raw;
+                const c = _lastCard();
+                if (!c) return;
+                const body = c.el.querySelector(".ma-card-body");
+                if (!body) return;
+                // 移除等待状态
+                const status = body.querySelector(".ma-card-status");
+                if (status) status.remove();
+                const summary = d.summary || "";
+                if (summary) {
+                    let outputEl = body.querySelector(".ma-card-output");
+                    if (!outputEl) {
+                        outputEl = document.createElement("div");
+                        outputEl.className = "ma-card-output";
+                        body.appendChild(outputEl);
+                    }
+                    // 用 Markdown 渲染替换流式纯文本
+                    outputEl.style.whiteSpace = "";
+                    outputEl.innerHTML = typeof marked !== "undefined" ? marked.parse(summary) : esc(summary);
+                    if (typeof hljs !== "undefined") {
+                        outputEl.querySelectorAll("pre code").forEach(b => hljs.highlightElement(b));
+                    }
+                }
+                scrollBottom();
+            } catch (e) { console.warn("addResultToFlow", e); }
+        }
+
+        /* --- 流式输出 → 实时写入对应卡片 --- */
+        let _scrollRAF = 0;
+        function _throttledScroll() {
+            if (_scrollRAF) return;
+            _scrollRAF = requestAnimationFrame(() => { _scrollRAF = 0; scrollBottom(); });
+        }
+        function appendWorkerStream(node, text) {
+            const c = _lastCard();
+            if (!c) return;
+            const body = c.el.querySelector(".ma-card-body");
+            if (!body) return;
+            // 移除等待状态
+            const status = body.querySelector(".ma-card-status");
+            if (status) status.remove();
+            // 获取或创建输出区
+            let out = body.querySelector(".ma-card-output");
+            if (!out) {
+                out = document.createElement("div");
+                out.className = "ma-card-output";
+                out.style.whiteSpace = "pre-wrap";
+                body.appendChild(out);
+            }
+            out.textContent += text;
+            // 输出区也自动滚到底
+            out.scrollTop = out.scrollHeight;
+            _throttledScroll();
+        }
+
+        /* --- trace 数据 → 回填精确耗时 --- */
+        function updateFlowTimings(raw) {
+            try {
+                const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+                if (!Array.isArray(data)) return;
+                data.forEach((item, i) => {
+                    if (_maCards[i] && item.end_time != null && item.start_time != null) {
+                        const dur = (item.end_time - item.start_time).toFixed(1);
+                        const t = _maCards[i].el.querySelector(".ma-card-time");
+                        if (t) t.textContent = dur + "s";
+                    }
+                });
+            } catch (e) { console.warn("updateFlowTimings", e); }
+        }
+
+        /* --- 完成 → 将最后一张卡片标记为 done --- */
+        function finalizeFlow() {
+            const c = _lastCard();
+            if (c) {
+                c.el.classList.remove("active");
+                c.el.classList.add("done");
+                const dur = ((Date.now() - _maStepStart) / 1000).toFixed(1);
+                const t = c.el.querySelector(".ma-card-time");
+                if (t && !t.textContent) t.textContent = dur + "s";
+                const status = c.el.querySelector(".ma-card-status");
+                if (status) status.remove();
+            }
+        }
+
+        /* --- 重置 --- */
+        function resetFlowPanel() {
+            _maWorkflowEl = null;
+            _maCards = [];
+            _maStepStart = 0;
         }
 
         // ======================== RAG 知识库 UI ========================
